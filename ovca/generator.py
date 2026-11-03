@@ -48,9 +48,10 @@ def sample_schedule(rng):
     return Schedule(nact, t_surg, act)
 
 
-def nadir(model: BaseModel, p: PatientParameters, step=0.05):
-    """Lowest true CA-125 from t = 0 to the end of ACT."""
-    return float(model.simulate_patient(np.arange(0.0, p.schedule.t_end + step / 2, step), p).min())
+def pre_surgery_min(model: BaseModel, p: PatientParameters, step=0.05):
+    """Lowest true CA-125 before surgery (during NACT)."""
+    t = np.append(np.arange(0.0, p.schedule.t_surgery, step), p.schedule.t_surgery - 1e-9)
+    return float(model.simulate_patient(t, p).min())
 
 
 def surgery_jump(model: BaseModel, p: PatientParameters):
@@ -61,20 +62,20 @@ def surgery_jump(model: BaseModel, p: PatientParameters):
 
 
 def sample_parameters(rng, model: BaseModel, patient_id, population=None,
-                      nadir_min=C.NADIR_MIN, jump_range=C.SURGERY_JUMP_RANGE):
+                      pre_min=C.PRE_SURGERY_MIN, jump_range=C.SURGERY_JUMP_RANGE):
     """Draw one patient's parameter set from the population (log-normal around the median).
 
     Two gates; a draw that fails either is redrawn:
-      - surgery must give a clear jump: after/before CA-125 within jump_range;
-      - true CA-125 must not fall below nadir_min before the end of ACT.
-    Pass None to switch a gate off.
+      - NACT does not bring CA-125 down too far: true CA-125 stays >= pre_min before surgery;
+      - surgery is the big drop: after/before CA-125 within jump_range.
+    After surgery CA-125 may fall as low as the model takes it. Pass None to switch a gate off.
     """
     for _ in range(C.MAX_REDRAWS):
         p = _draw_parameters(rng, model, patient_id, population)
         if jump_range is not None and not (jump_range[0] <= surgery_jump(model, p)
                                            <= jump_range[1]):
             continue
-        if nadir_min is not None and nadir(model, p) < nadir_min:
+        if pre_min is not None and pre_surgery_min(model, p) < pre_min:
             continue
         return p
     raise RuntimeError(f"no draw passed the gates in {C.MAX_REDRAWS} tries")

@@ -25,15 +25,16 @@ SURVEILLANCE_EVERY = 3.0     # a CA-125 reading every ~3 months during surveilla
 GRID_STEP = 0.01             # months, for finding when the true curve crosses the cutoff
 
 # Population of patient parameters, per model. Each value is log-normal around the median
-# ("typical patient"); `corr` is on the log scale. Tuned with engineering/tune_population.py so
-# that, after the NADIR_MIN redraw, the nadir median is ~12 U/mL and about 20% / 33% recur
-# within 6 / 12 months of the end of ACT. About 60% of raw draws are redrawn by NADIR_MIN, so
-# the final cohort is shifted to slower kill than these medians.
+# ("typical patient"); `corr` is on the log scale. Tuned with engineering/tune_population.py
+# (both gates on): NACT brings CA-125 only partly down (true CA-125 just before surgery about
+# 40 / 80 / 190 at the 10th / 50th / 90th percentile), surgery is the big drop, ACT pushes it
+# lower; about 16% / 32% recur within 6 / 12 months after ACT, ~17% not within 36 months,
+# ~3% persistent. About 40% of raw draws are redrawn by the gates.
 POPULATION = {
     "growth_death": dict(
         names=["gamma_pre", "delta_pre", "gamma_post", "delta_post"],
-        median=[0.10, 0.95, 0.04, 0.70],
-        sd_log=[0.50, 0.25, 0.55, 0.25],
+        median=[0.10, 0.90, 0.10, 0.50],
+        sd_log=[0.40, 0.20, 0.45, 0.25],
         corr=np.array([
             [1.0, 0.0, 0.6, 0.0],
             [0.0, 1.0, 0.0, 0.6],
@@ -42,10 +43,11 @@ POPULATION = {
         ]),
     ),
 }
-CA125_0_MEDIAN, CA125_0_SD_LOG = 800.0, 0.6   # baseline CA-125 (U/mL)
-Q_MEDIAN, Q_SD_LOG = 0.35, 0.6                # fraction of tumour left by surgery
-Q_RANGE = (0.02, 1.0)
-SURGERY_JUMP_RANGE = (0.05, 0.8)   # gate: CA-125 just after / just before surgery must be in
-                                   # this range (a clear drop, but not near-total), else redraw
-NADIR_MIN = 5.0              # redraw a patient whose true CA-125 falls below this (U/mL) by end of ACT
+CA125_0_MEDIAN, CA125_0_SD_LOG = 800.0, 0.45  # baseline CA-125 (U/mL)
+Q_MEDIAN, Q_SD_LOG = 0.20, 0.6                # fraction of tumour left by surgery
+Q_RANGE = (0.001, 1.0)
+SURGERY_JUMP_RANGE = (0.01, 0.3)   # gate: CA-125 just after / just before surgery (surgery is
+                                   # the big drop, but not to nothing), else redraw
+PRE_SURGERY_MIN = 30.0       # gate: NACT alone does not push true CA-125 below this (U/mL);
+                             # after surgery it may go as low as the model takes it
 MAX_REDRAWS = 1000

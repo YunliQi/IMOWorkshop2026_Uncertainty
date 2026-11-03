@@ -32,8 +32,10 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
    - **Schedule** (whole months): 3–4 NACT cycles from month 0, each on for 1 month then a
      0–1 month gap; surgery 1–2 months after the last NACT cycle ends; first ACT 1–2 months
      after surgery; 3 ACT cycles with the same 0–1 month gaps.
-   - **Gates** (a failing draw is redrawn): surgery must be a clear jump, CA-125 after/before in
-     [0.05, 0.8]; true CA-125 must stay ≥ 5 U/mL until the end of ACT.
+   - **Gates** (a failing draw is redrawn): NACT brings CA-125 only partly down (true CA-125
+     stays ≥ 30 U/mL before surgery; just before surgery it is ~40 / 80 / 190 at the 10th / 50th /
+     90th percentile); surgery is the big drop
+     (CA-125 after/before in [0.01, 0.3]). After surgery CA-125 may go as low as the model takes it.
 2. **Longitudinal data** (`generator.generate_longitudinal`): the model is simulated day by day
    before surgery, the state is multiplied by q at surgery, then simulated after surgery with the
    post-surgery parameters, up to 36 months after the end of ACT. CA-125 = model value with 15%
