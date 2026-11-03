@@ -218,3 +218,26 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- IMOWorkshop2026 project rules ----
+# Real patient data: never commit
+anonymized_data_protocol1*.xlsx
+~$*
+*.xlsx
+plots.zip
+
+# Environment and caches
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Regenerable outputs (run_all.py recreates them)
+data/
+results/
+
+# Local-only work, not uploaded for now
+legacy_abc/
+PLAN.md
+main_patient_v5_deident.py
+ca125_fit_results.csv
