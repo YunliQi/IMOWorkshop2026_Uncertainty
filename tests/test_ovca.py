@@ -122,6 +122,44 @@ def test_save_and_load_roundtrip(tmp_path=None):
     assert np.allclose(truth2.q_surgery, truth.q_surgery, rtol=1e-5)
 
 
+def test_batch_simulation_matches_single():
+    m = get_model("growth_death")
+    rng = np.random.default_rng(6)
+    ps = [generator.sample_parameters(rng, m, f"B{i}") for i in range(4)]
+    s = ps[0].schedule
+    for p in ps:
+        p.schedule = s
+    th_pre = {k: np.array([p.theta_pre[k] for p in ps]) for k in m.param_names}
+    th_post = {k: np.array([p.theta_post[k] for p in ps]) for k in m.param_names}
+    c0, q = np.array([p.ca125_0 for p in ps]), np.array([p.q_surgery for p in ps])
+    t = np.linspace(0, 30, 50)
+    fast = m.simulate_patient_batch(t, s, th_pre, th_post, c0, q)
+    assert np.allclose(fast, BaseModel.simulate_patient_batch(m, t, s, th_pre, th_post, c0, q))
+    tau = m.recurrence_time_batch(s, th_pre, th_post, c0, q, 35.0, 36.0)
+    for i, p in enumerate(ps):
+        assert abs(min(tau[i], 99) - min(generator.recurrence_time(m, p), 99)) < 0.02
+
+
+def test_abc_smc_covers_truth_on_clean_data():
+    from ovca import abc_smc as A
+    m = get_model("growth_death")
+    p = generator.sample_parameters(np.random.default_rng(7), m, "A")
+    daily, obs, _ = generator.generate_longitudinal(m, p, np.random.default_rng(8), noise_sd=0.02)
+    t, y = obs.month.values, obs.ca125.values
+    post = A.fit(m, t, y, p.schedule, t_now=p.schedule.t_end, censor_below=None, noise_sd=0.05,
+                 n_particles=400, max_generations=8, seed=1)
+    summ = post.summary().set_index("parameter")
+    for k in ("delta_pre", "q_surgery"):
+        true = p.theta_pre["delta"] if k == "delta_pre" else p.q_surgery
+        assert summ.loc[k, "q10"] * 0.8 <= true <= summ.loc[k, "q90"] * 1.25, (k, true, summ.loc[k])
+    fc = post.forecast(n=300)
+    lo, md, hi = fc.recurrence_interval(0.8, cap=37)
+    assert lo <= md <= hi
+    nv = fc.next_visit(min_gap=1, max_gap=6)
+    assert post.t_now + 1 - 1e-9 <= nv <= post.t_now + 6 + 1e-9
+    assert 0 <= fc.surprise(nv, 10.0) <= 1
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

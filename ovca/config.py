@@ -51,3 +51,22 @@ SURGERY_JUMP_RANGE = (0.01, 0.3)   # gate: CA-125 just after / just before surge
 PRE_SURGERY_MIN = 30.0       # gate: NACT alone does not push true CA-125 below this (U/mL);
                              # after surgery it may go as low as the model takes it
 MAX_REDRAWS = 1000
+
+# --- ABC-SMC (ovca/abc_smc.py) ---
+# Default prior for one patient, on the sampling scale: (mean, sd). Used when no training
+# cohort is available; abc_smc.empirical_prior() replaces the rate and shift entries with
+# values estimated from RMSE fits. log_ca125_0 is centred on the patient's first reading.
+ABC_PRIOR = {
+    "log_gamma_pre": (np.log(0.10), 0.7),
+    "log_delta_pre": (np.log(0.80), 0.5),
+    "shift_gamma": (0.0, 0.6),        # surgery: log gamma_post = log gamma_pre + shift_gamma
+    "shift_delta": (0.0, 0.6),
+    "log_q": (np.log(0.20), 0.8),     # surgery: tumour x q (clinical belief, not estimated)
+}
+ABC_SHIFT_PARAMS = ("gamma", "delta")  # which model parameters surgery may shift
+ABC_N_PARTICLES = 1000
+ABC_ALPHA = 0.5               # next epsilon = this quantile of the current distances
+ABC_MAX_GENERATIONS = 12
+ABC_MIN_ACCEPT_RATE = 0.02    # stop when acceptance falls below this
+ABC_MAX_SIMS_PER_GEN = 200_000
+ABC_BATCH = 4000

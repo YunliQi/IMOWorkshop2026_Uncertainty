@@ -72,6 +72,29 @@ What each returns:
 
 To change cohort size, noise, schedule rules, gates or the population, edit `ovca/config.py`.
 
+## ABC-SMC forecasts (`abc_smc.ipynb`)
+
+`ovca/abc_smc.py` gives, for one patient at any time point `t_now`: the posterior of the model
+parameters (ABC-SMC), a forecast of CA-125 and of recurrence with intervals, a suggested time for
+the next CA-125 visit, and an update once that reading is in. Surgery is a jump (`q`) plus a
+shift of the model parameters on the log scale (`shift_*`). Readings below 35 are censored in the
+distance by default; optional time decay down-weights old readings.
+[`abc_smc.ipynb`](abc_smc.ipynb) is the pipeline, figures and usage guide (runs in ~7 min):
+
+```bash
+uv pip install --python .venv/bin/python nbformat nbconvert ipykernel   # to run the notebook
+.venv/bin/jupyter nbconvert --to notebook --execute --inplace abc_smc.ipynb
+```
+
+```python
+from ovca import abc_smc as A
+post = A.fit(model, t_obs, y_obs, schedule, t_now=schedule.t_end,
+             prior=A.prior_for(A.default_prior_spec(model), y_obs[0]))
+fc = post.forecast()
+fc.recurrence_interval(0.8); fc.next_visit(rule="risk", p=0.10)
+post = post.update(t_new, y_new)
+```
+
 ## Layout
 
 | File | What it does |
@@ -83,6 +106,7 @@ To change cohort size, noise, schedule rules, gates or the population, edit `ovc
 | `ovca/models/__init__.py` | model registry (`get_model("growth_death")`) |
 | `ovca/generator.py` | parameter set → longitudinal CA-125 data (noise, surveillance, recurrence detection, true recurrence time) |
 | `ovca/calibration.py` | RMSE fit of a model to the data, each segment separately |
+| `ovca/abc_smc.py` | ABC-SMC posterior, forecast, next-visit rule and update for one patient |
 | `ovca/plots.py` | figures in `figures/` |
 | `run_pipeline.py` | runs everything; `--gen-model` and `--fit-model` can differ |
 

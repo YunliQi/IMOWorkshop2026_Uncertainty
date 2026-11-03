@@ -92,6 +92,31 @@ class BaseModel(ABC):
         x_post = self.solve(t_post, s.t_surgery, x_after, p.theta_post, s.intervals("post"))
         return np.concatenate([self.observe(x_pre[:-1]), self.observe(x_post)])
 
+    # ---- many parameter sets at once (used by ABC) ---------------------------------------
+    def simulate_patient_batch(self, t, schedule, theta_pre, theta_post, ca125_0, q):
+        """Noise-free CA-125 for N parameter sets: theta_pre / theta_post map each parameter
+        name to an array of N values; ca125_0 and q are arrays of N. Returns (N, len(t)).
+        Default: a loop over simulate_patient; models with a closed form override this."""
+        n = len(np.atleast_1d(ca125_0))
+        out = np.empty((n, len(np.atleast_1d(t))))
+        for i in range(n):
+            p = PatientParameters("batch", self.name,
+                                  {k: float(v[i]) for k, v in theta_pre.items()},
+                                  {k: float(v[i]) for k, v in theta_post.items()},
+                                  float(ca125_0[i]), float(q[i]), schedule)
+            out[i] = self.simulate_patient(t, p)
+        return out
+
+    def recurrence_time_batch(self, schedule, theta_pre, theta_post, ca125_0, q, cutoff,
+                              followup, step=0.01):
+        """First time >= end of ACT at which CA-125 reaches cutoff, for N parameter sets
+        (inf if not within followup months). Default: evaluate on a time grid."""
+        grid = np.arange(schedule.t_end, schedule.t_end + followup + step / 2, step)
+        above = self.simulate_patient_batch(grid, schedule, theta_pre, theta_post, ca125_0,
+                                            q) >= cutoff
+        idx = np.argmax(above, axis=1)
+        return np.where(above.any(axis=1), grid[idx], np.inf)
+
     # ---- helpers -----------------------------------------------------------------------
     def theta(self, vector):
         return dict(zip(self.param_names, map(float, vector)))
