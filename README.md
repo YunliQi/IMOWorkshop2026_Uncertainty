@@ -77,8 +77,8 @@ To change cohort size, noise, schedule rules, gates or the population, edit `ovc
 `ovca/abc_smc.py` gives, for one patient at any time point `t_now`: the posterior of the model
 parameters (ABC-SMC), a forecast of CA-125 and of recurrence with intervals, a suggested time for
 the next CA-125 visit, and an update once that reading is in. Surgery is a jump (`q`) plus a
-shift of the model parameters on the log scale (`shift_*`). Readings below 35 are censored in the
-distance by default; optional time decay down-weights old readings.
+shift of the model parameters on the log scale (`shift_*`). Readings below 35 are used as they are
+(`censor_below=35` treats them as "below 35" only); optional time decay down-weights old readings.
 [`abc_smc.ipynb`](abc_smc.ipynb) is the pipeline, figures and usage guide (runs in ~7 min):
 
 ```bash

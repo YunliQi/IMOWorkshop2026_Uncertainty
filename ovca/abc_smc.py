@@ -10,8 +10,9 @@ Parameterisation (one model for both segments):
 
 Simulator: model.simulate_patient_batch + multiplicative assay noise (lognormal, sd noise_sd).
 Distance between simulated and observed readings, on the log scale:
-    r_i = log max(sim_i, c) - log max(obs_i, c)    c = censor_below (35): a reading below 35
-                                                   only says "below 35"
+    r_i = log sim_i - log obs_i                    readings used as they are (default), or
+    r_i = log max(sim_i, c) - log max(obs_i, c)    with censor_below = c (e.g. 35): a reading
+                                                   below c then only says "below c"
     d   = sqrt( sum_i w_i r_i^2 / sum_i w_i )      w_i = exp(-(t_now - t_i) / decay), or 1
 ABC-SMC (Beaumont et al. 2009, adaptive epsilon): particles from the prior, then generations
 with epsilon = ABC_ALPHA quantile of the previous distances, Gaussian perturbation with twice
@@ -210,7 +211,8 @@ class ABCPosterior:
                 if keep.sum() >= 50:
                     x, tumour, tau = x[keep], tumour[keep], tau[keep]
         noisy = tumour * np.exp(rng.normal(0, self.settings["noise_sd"], tumour.shape))
-        return Forecast(grid, tumour, noisy, tau, self.t_now, s, x)
+        return Forecast(grid, tumour, noisy, tau, self.t_now, s, x,
+                        self.settings.get("censor_below"))
 
     def update(self, t_new, y_new, **kwargs):
         """Add readings and refit from the same prior (all data used again)."""
@@ -237,7 +239,7 @@ def _weighted_cov(x, w):
 
 
 def fit(model: BaseModel, t_obs, y_obs, schedule: Schedule, t_now=None, prior: Prior = None,
-        decay=None, noise_sd=C.NOISE_SD_LOG, censor_below=C.CA125_CUTOFF,
+        decay=None, noise_sd=C.NOISE_SD_LOG, censor_below=C.ABC_CENSOR_BELOW,
         n_particles=C.ABC_N_PARTICLES, alpha=C.ABC_ALPHA,
         max_generations=C.ABC_MAX_GENERATIONS, min_accept_rate=C.ABC_MIN_ACCEPT_RATE,
         max_sims_per_gen=C.ABC_MAX_SIMS_PER_GEN, batch=C.ABC_BATCH, seed=0, verbose=False):
@@ -315,6 +317,7 @@ class Forecast:
     t_now: float
     schedule: Schedule
     particles: np.ndarray
+    censor_below: float = None    # as in the fit: None = readings used as they are
 
     def band(self, levels=(0.1, 0.5, 0.9), noisy=False):
         """Quantiles over draws at each time: tumour (parameter uncertainty) or noisy CA-125
@@ -360,10 +363,12 @@ class Forecast:
             raise ValueError("rule must be 'risk' or 'width'")
         return float(cand[np.argmax(hit)]) if hit.any() else float(hi)
 
-    def surprise(self, t_new, y_new, cutoff=C.CA125_CUTOFF):
-        """Probability of an outcome at least as unusual as the new reading (small = surprising).
-        Reading below cutoff: P(forecast below cutoff). Reading at or above cutoff:
-        P(forecast >= cutoff) x two-sided tail of y_new among those forecasts."""
+    def surprise(self, t_new, y_new, cutoff="fit"):
+        """Probability of an outcome at least as unusual as the new reading (small = surprising):
+        two-sided tail of y_new in the forecast. With a cutoff (default: the fit's censor_below),
+        a reading below it gives P(forecast below cutoff), and one above it gives
+        P(forecast >= cutoff) x two-sided tail among those forecasts."""
+        cutoff = self.censor_below if cutoff == "fit" else cutoff
         i = min(np.searchsorted(self.t, t_new), len(self.t) - 1)
         v = self.ca125[:, i]
         if cutoff and y_new < cutoff:
@@ -374,9 +379,10 @@ class Forecast:
         f = np.mean(above <= y_new)
         return float(above.size / v.size * 2 * min(f, 1 - f))
 
-    def pit(self, t_new, y_new, cutoff=C.CA125_CUTOFF):
+    def pit(self, t_new, y_new, cutoff="fit"):
         """Where a new reading falls in the forecast: P(predicted CA-125 <= y_new). Near 0 or 1
         = surprising. A reading below cutoff is censored: returns P(predicted < cutoff)."""
+        cutoff = self.censor_below if cutoff == "fit" else cutoff
         i = np.searchsorted(self.t, t_new)
         i = min(i, len(self.t) - 1)
         v = self.ca125[:, i]

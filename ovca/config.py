@@ -64,6 +64,8 @@ ABC_PRIOR = {
     "log_q": (np.log(0.20), 0.8),     # surgery: tumour x q (clinical belief, not estimated)
 }
 ABC_SHIFT_PARAMS = ("gamma", "delta")  # which model parameters surgery may shift
+ABC_CENSOR_BELOW = None       # None: use readings below 35 as they are; 35: treat them as
+                              # "below 35" only (censored), the workshop RMSE convention
 ABC_N_PARTICLES = 1000
 ABC_ALPHA = 0.5               # next epsilon = this quantile of the current distances
 ABC_MAX_GENERATIONS = 12
