@@ -8,8 +8,9 @@ Two steps, usable on their own:
      with assay noise, surveillance and recurrence detection, plus the true recurrence time.
 
 generate_cohort() repeats both for N patients.  Run:  .venv/bin/python -m ovca.generator
-Outputs (data/): synthetic_ca125.csv (what a clinician would see) and synthetic_truth.csv
-(true parameters and recurrence times, for checking only).
+Outputs (data/): synthetic_ca125.csv and synthetic_treatments.csv (what a clinician would see:
+readings, and treatment cycles and surgery) and synthetic_truth.csv (true parameters and
+recurrence times, for checking only).
 """
 from pathlib import Path
 
@@ -23,17 +24,62 @@ from .patient import PatientParameters, Schedule
 DATA = Path(__file__).resolve().parents[1] / "data"
 
 
+def _gap(rng, rng_months):
+    """Whole number of months, uniform on [low, high]."""
+    return float(rng.integers(rng_months[0], rng_months[1] + 1))
+
+
 def sample_schedule(rng):
-    """3-4 NACT cycles ~3 weeks apart -> surgery -> 3 ACT cycles (months)."""
-    n_nact = int(rng.choice([3, 4]))
-    nact = 0.3 + 0.7 * np.arange(n_nact) + rng.uniform(-0.05, 0.05, n_nact)
-    t_surg = nact[-1] + 0.8 + rng.uniform(0.0, 0.5)
-    act = t_surg + 1.0 + rng.uniform(0, 0.3) + 0.7 * np.arange(3)
+    """NACT cycles -> surgery -> ACT cycles, all on whole months (first NACT at month 0).
+
+    Each cycle is on for TREATMENT_DURATION, then a 0-1 month gap (GAP_MONTHS) before the next.
+    Surgery comes SURGERY_GAP months after the last NACT cycle ends; the first ACT cycle starts
+    ACT_START_GAP months after surgery.
+    """
+    d = C.TREATMENT_DURATION
+    nact = [0.0]
+    for _ in range(int(rng.choice(C.N_NACT_CHOICES)) - 1):
+        nact.append(nact[-1] + d + _gap(rng, C.GAP_MONTHS))
+    t_surg = nact[-1] + d + _gap(rng, C.SURGERY_GAP)
+    act = [t_surg + _gap(rng, C.ACT_START_GAP)]
+    for _ in range(C.N_ACT - 1):
+        act.append(act[-1] + d + _gap(rng, C.GAP_MONTHS))
     return Schedule(nact, t_surg, act)
 
 
-def sample_parameters(rng, model: BaseModel, patient_id, population=None):
-    """Draw one patient's parameter set from the population (log-normal around the median)."""
+def nadir(model: BaseModel, p: PatientParameters, step=0.05):
+    """Lowest true CA-125 from t = 0 to the end of ACT."""
+    return float(model.simulate_patient(np.arange(0.0, p.schedule.t_end + step / 2, step), p).min())
+
+
+def surgery_jump(model: BaseModel, p: PatientParameters):
+    """CA-125 just after surgery divided by CA-125 just before (the size of the jump)."""
+    ts = p.schedule.t_surgery
+    before, after = model.simulate_patient([ts - 1e-9, ts], p)
+    return float(after / before)
+
+
+def sample_parameters(rng, model: BaseModel, patient_id, population=None,
+                      nadir_min=C.NADIR_MIN, jump_range=C.SURGERY_JUMP_RANGE):
+    """Draw one patient's parameter set from the population (log-normal around the median).
+
+    Two gates; a draw that fails either is redrawn:
+      - surgery must give a clear jump: after/before CA-125 within jump_range;
+      - true CA-125 must not fall below nadir_min before the end of ACT.
+    Pass None to switch a gate off.
+    """
+    for _ in range(C.MAX_REDRAWS):
+        p = _draw_parameters(rng, model, patient_id, population)
+        if jump_range is not None and not (jump_range[0] <= surgery_jump(model, p)
+                                           <= jump_range[1]):
+            continue
+        if nadir_min is not None and nadir(model, p) < nadir_min:
+            continue
+        return p
+    raise RuntimeError(f"no draw passed the gates in {C.MAX_REDRAWS} tries")
+
+
+def _draw_parameters(rng, model, patient_id, population):
     pop = population or C.POPULATION[model.name]
     sd = np.asarray(pop["sd_log"])
     v = np.exp(rng.multivariate_normal(np.log(pop["median"]), np.outer(sd, sd) * pop["corr"]))
@@ -56,14 +102,27 @@ def recurrence_time(model: BaseModel, p: PatientParameters, cutoff=C.CA125_CUTOF
 
 
 def visit_times(p: PatientParameters, rng):
-    """Clinic visits: baseline, each NACT cycle, just before surgery, ~2 weeks after surgery,
-    each ACT cycle, end of ACT, then surveillance every ~3 months."""
+    """Clinic visits: at the start of each NACT cycle (the first one is the baseline), just
+    before surgery, ~2 weeks after surgery, at the start of each ACT cycle, at the end of ACT,
+    then surveillance every ~3 months."""
     s = p.schedule
     n_surv = int(C.FOLLOWUP_MONTHS // C.SURVEILLANCE_EVERY)
     surv = s.t_end + C.SURVEILLANCE_EVERY * np.arange(1, n_surv + 1) \
         + rng.uniform(-0.3, 0.3, n_surv)
-    return np.concatenate([[0.0], s.nact_starts + 0.01, [s.t_surgery - 0.1],
-                           [s.t_surgery + 0.5], s.act_starts + 0.01, [s.t_end], surv])
+    return np.concatenate([s.nact_starts, [s.t_surgery - 0.1], [s.t_surgery + 0.5],
+                           s.act_starts, [s.t_end], surv])
+
+
+def treatment_table(p: PatientParameters):
+    """One row per treatment event: NACT and ACT cycles (start, end) and surgery."""
+    s = p.schedule
+    rows = [dict(patient=p.patient_id, treatment="NACT", cycle=i + 1, start_month=x,
+                 end_month=x + s.duration) for i, x in enumerate(s.nact_starts)]
+    rows.append(dict(patient=p.patient_id, treatment="surgery", cycle=np.nan,
+                     start_month=s.t_surgery, end_month=s.t_surgery))
+    rows += [dict(patient=p.patient_id, treatment="ACT", cycle=i + 1, start_month=x,
+                  end_month=x + s.duration) for i, x in enumerate(s.act_starts)]
+    return pd.DataFrame(rows)
 
 
 def generate_longitudinal(model: BaseModel, p: PatientParameters, rng,
@@ -99,19 +158,23 @@ def generate_longitudinal(model: BaseModel, p: PatientParameters, rng,
 
 
 def generate_cohort(model: BaseModel, n=C.N_PATIENTS, seed=C.SEED):
+    """Returns (readings, truth, treatments) DataFrames."""
     rng = np.random.default_rng(seed)
-    all_obs, truths = [], []
+    all_obs, truths, treats = [], [], []
     for i in range(n):
         p = sample_parameters(rng, model, f"SYN{i + 1:02d}")
         obs, truth = generate_longitudinal(model, p, rng)
         all_obs.append(obs)
         truths.append(truth)
-    return pd.concat(all_obs, ignore_index=True), pd.DataFrame(truths)
+        treats.append(treatment_table(p))
+    return (pd.concat(all_obs, ignore_index=True), pd.DataFrame(truths),
+            pd.concat(treats, ignore_index=True))
 
 
-def save(obs, truth, folder=DATA):
+def save(obs, truth, treatments, folder=DATA):
     folder.mkdir(exist_ok=True)
     obs[["patient", "month", "phase", "ca125"]].to_csv(folder / "synthetic_ca125.csv", index=False)
+    treatments.to_csv(folder / "synthetic_treatments.csv", index=False)
     obs.to_csv(folder / "synthetic_ca125_with_truth.csv", index=False)
     truth.to_csv(folder / "synthetic_truth.csv", index=False)
 
@@ -130,8 +193,8 @@ def summary(obs, truth):
 
 
 def main(model_name="growth_death", n=C.N_PATIENTS, seed=C.SEED):
-    obs, truth = generate_cohort(get_model(model_name), n, seed)
-    save(obs, truth)
+    obs, truth, treatments = generate_cohort(get_model(model_name), n, seed)
+    save(obs, truth, treatments)
     print(summary(obs, truth))
     return obs, truth
 

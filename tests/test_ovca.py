@@ -30,6 +30,9 @@ def test_surgery_jump():
     ts = p.schedule.t_surgery
     before, after = m.simulate_patient([ts - 1e-9, ts], p)
     assert np.isclose(after / before, p.q_surgery, rtol=1e-6)
+    lo, hi = generator.C.SURGERY_JUMP_RANGE
+    assert lo <= generator.surgery_jump(m, p) <= hi          # the gate holds
+    assert generator.nadir(m, p) >= generator.C.NADIR_MIN
 
 
 def test_recurrence_time_without_treatment():

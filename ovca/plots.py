@@ -7,6 +7,7 @@
 from pathlib import Path
 
 import matplotlib
+import matplotlib.ticker
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -68,14 +69,15 @@ def fig_explainer(model: BaseModel, obs, truth, pid="SYN12"):
     axD.text(s.act_starts[0], 1.35, f"ACT × {len(s.act_starts)}", va="center", fontsize=9)
     axD.text(s.t_end + 0.3, 0.5, "end of ACT → surveillance every 3 mo,\nD(t) = 0 from here on",
              fontsize=9, va="center", color=MUTED)
-    axD.set_title("① Random schedule: D(t) = 1 for one month after each cycle (dashed lines)",
+    axD.set_title(f"① Random schedule: D(t) = 1 for one month per cycle (dashed lines), then a "
+                  f"{C.GAP_MONTHS[0]}-{C.GAP_MONTHS[1]} month gap",
                   loc="left", fontsize=11)
 
     # 2. hidden tumour with the surgery jump
     axT.semilogy(tt, T, color=INK, lw=1.8)
     _marks(axT, s)
     axT.axhline(C.CA125_CUTOFF, color=MODEL_C, lw=1, ls="-.")
-    axT.text(8, C.CA125_CUTOFF * 1.15, "35 U/mL", color=MODEL_C, fontsize=9)
+    axT.text(0.2, C.CA125_CUTOFF * 1.15, "35 U/mL", color=MODEL_C, fontsize=9)
     T_before = model.simulate_patient([s.t_surgery - 1e-6], p)[0]
     T_after = model.simulate_patient([s.t_surgery], p)[0]
     axT.annotate("", xy=(s.t_surgery + 0.15, T_after), xytext=(s.t_surgery + 0.15, T_before),
@@ -128,8 +130,11 @@ def fig_explainer(model: BaseModel, obs, truth, pid="SYN12"):
     axQ.text(p.q_surgery + 0.02, axQ.get_ylim()[1] * 0.9, pid, color=MODEL_C, fontsize=9)
     axQ.set_xlabel("q = fraction of CA-125 left after surgery")
     axQ.set_ylabel("patients")
-    axQ.set_title(f"Surgery fraction q, all {len(truth)} patients\n"
-                  f"log q ~ Normal(log {C.Q_MEDIAN}, {C.Q_SD_LOG}²), clipped to {list(C.Q_RANGE)}",
+    lo, hi = C.SURGERY_JUMP_RANGE
+    for x in (lo, hi):
+        axQ.axvline(x, color=INK, lw=0.8, ls="--")
+    axQ.set_title(f"Surgery jump q, all {len(truth)} patients\n"
+                  f"log q ~ Normal(log {C.Q_MEDIAN}, {C.Q_SD_LOG}²); gate keeps {lo} ≤ q ≤ {hi}",
                   loc="left", fontsize=10)
 
     k = model.param_names[0]
@@ -138,6 +143,10 @@ def fig_explainer(model: BaseModel, obs, truth, pid="SYN12"):
     axG.scatter([p.theta_pre[k]], [p.theta_post[k]], s=60, color=MODEL_C, zorder=5)
     axG.set_xscale("log")
     axG.set_yscale("log")
+    for a in (axG.xaxis, axG.yaxis):
+        a.set_major_locator(matplotlib.ticker.LogLocator(subs=(1, 2, 5)))
+        a.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
+        a.set_minor_formatter(matplotlib.ticker.NullFormatter())
     axG.set_xlabel(f"{k} before surgery (/month)")
     axG.set_ylabel(f"{k} after surgery (/month)")
     axG.set_title("Parameters are drawn jointly\n(log-normal, pre and post correlated)",

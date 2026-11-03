@@ -241,3 +241,6 @@ legacy_abc/
 PLAN.md
 main_patient_v5_deident.py
 ca125_fit_results.csv
+
+# Ad-hoc plots and scratch analysis (not uploaded unless stated)
+engineering/

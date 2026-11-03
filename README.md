@@ -27,9 +27,13 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ## Pipeline
 
 1. **Parameter set** (`generator.sample_parameters`): γ, δ before and after surgery are log-normal
-   around a typical patient (medians 0.20, 1.40, 0.18, 1.10 /month; pre and post correlated 0.6),
-   plus baseline CA-125, surgery fraction q and a random schedule. A `PatientParameters` can also
-   be written by hand.
+   around a typical patient (pre and post correlated 0.6), plus baseline CA-125, surgery fraction q
+   and a random schedule. A `PatientParameters` can also be written by hand.
+   - **Schedule** (whole months): 3–4 NACT cycles from month 0, each on for 1 month then a
+     0–1 month gap; surgery 1–2 months after the last NACT cycle ends; first ACT 1–2 months
+     after surgery; 3 ACT cycles with the same 0–1 month gaps.
+   - **Gates** (a failing draw is redrawn): surgery must be a clear jump, CA-125 after/before in
+     [0.05, 0.8]; true CA-125 must stay ≥ 5 U/mL until the end of ACT.
 2. **Longitudinal data** (`generator.generate_longitudinal`): the model is simulated before
    surgery, the state is multiplied by q at surgery, then simulated after surgery with the
    post-surgery parameters. CA-125 is read at each visit with 15% multiplicative noise; the first
@@ -37,7 +41,8 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 3. **Calibration** (`calibration.calibrate_cohort`): least squares on RMSE, as in the poster code:
    T0 of each segment = its first reading; readings below 35 count as 0 and are left out of the RMSE.
 
-Outputs: `data/synthetic_ca125.csv` (readings), `data/synthetic_truth.csv` (true parameters and
+Outputs: `data/synthetic_ca125.csv` (readings), `data/synthetic_treatments.csv` (NACT/ACT
+cycles with start and end month, and surgery), `data/synthetic_truth.csv` (true parameters and
 recurrence times), `results/calibration.csv`, `figures/0–2_*.png`.
 
 ## Adding a model

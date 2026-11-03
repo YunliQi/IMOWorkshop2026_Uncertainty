@@ -81,7 +81,7 @@ class PatientParameters:
     """Everything needed to simulate one patient with a given model.
 
     theta_pre / theta_post: the model's parameters before and after surgery, e.g.
-    {"gamma": 0.2, "delta": 1.4}. ca125_0: CA-125 at t = 0. q_surgery: surgery multiplies the
+    {"gamma": 0.2, "delta": 1.4}. ca125_0: CA-125 at t = 0. q_surgery: surgery (a jump) multiplies the
     tumour state by q (fraction left).
     """
     patient_id: str
