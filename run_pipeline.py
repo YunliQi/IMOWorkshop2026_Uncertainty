@@ -21,8 +21,8 @@ if __name__ == "__main__":
     gen, fit = get_model(a.gen_model), get_model(a.fit_model)
 
     print(f"== 1. generate synthetic cohort ({gen.name})")
-    obs, truth, treatments = generator.generate_cohort(gen, a.n, a.seed)
-    generator.save(obs, truth, treatments)
+    data, obs, truth = generator.generate_cohort(gen, a.n, a.seed)
+    generator.save(data)
     print(generator.summary(obs, truth))
 
     print(f"\n== 2. RMSE calibration ({fit.name})")

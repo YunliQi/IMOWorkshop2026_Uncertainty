@@ -4,13 +4,14 @@ Two steps, usable on their own:
   1. sample_parameters(): typical-patient values + population spread -> one PatientParameters
      (model parameters before/after surgery, baseline CA-125, surgery fraction q, schedule).
      You can also build a PatientParameters by hand and skip this step.
-  2. generate_longitudinal(): PatientParameters + model -> CA-125 readings at clinic visits,
+  2. generate_longitudinal(): PatientParameters + model -> daily tumour burden and CA-125,
      with assay noise, surveillance and recurrence detection, plus the true recurrence time.
 
 generate_cohort() repeats both for N patients.  Run:  .venv/bin/python -m ovca.generator
-Outputs (data/): synthetic_ca125.csv and synthetic_treatments.csv (what a clinician would see:
-readings, and treatment cycles and surgery) and synthetic_truth.csv (true parameters and
-recurrence times, for checking only).
+Output: data/synthetic_data.csv, one row per patient-day. Columns: tumor_burden (model value),
+CA125 (with noise), time (day), treatment_applied (D(t)), then auxiliary columns: patient,
+model, seeds, phase, visit (1 = clinic reading that day), noise_sd_log, model parameters,
+ca125_0, q_surgery, schedule and true recurrence (these are in months).
 """
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import pandas as pd
 
 from . import config as C
 from .models import BaseModel, get_model
-from .patient import PatientParameters, Schedule
+from .patient import PatientParameters, Schedule, drug_on
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -113,76 +114,114 @@ def visit_times(p: PatientParameters, rng):
                            s.act_starts, [s.t_end], surv])
 
 
-def treatment_table(p: PatientParameters):
-    """One row per treatment event: NACT and ACT cycles (start, end) and surgery."""
+DAILY_COLUMNS = ["tumor_burden", "CA125", "time", "treatment_applied"]
+DATA_FILE = "synthetic_data.csv"
+
+
+def daily_table(model: BaseModel, p: PatientParameters, rng, noise_sd=C.NOISE_SD_LOG,
+                seeds=None):
+    """One row per day from day 0 to the end of follow-up (end of ACT + FOLLOWUP_MONTHS).
+
+    tumor_burden: the generating model's noise-free value; CA125: tumor_burden with
+    multiplicative noise; time: day; treatment_applied: D(t), 1 while a cycle is on, else 0.
+    """
     s = p.schedule
-    rows = [dict(patient=p.patient_id, treatment="NACT", cycle=i + 1, start_month=x,
-                 end_month=x + s.duration) for i, x in enumerate(s.nact_starts)]
-    rows.append(dict(patient=p.patient_id, treatment="surgery", cycle=np.nan,
-                     start_month=s.t_surgery, end_month=s.t_surgery))
-    rows += [dict(patient=p.patient_id, treatment="ACT", cycle=i + 1, start_month=x,
-                  end_month=x + s.duration) for i, x in enumerate(s.act_starts)]
-    return pd.DataFrame(rows)
+    days = np.arange(0, int(round((s.t_end + C.FOLLOWUP_MONTHS) * C.DAYS_PER_MONTH)) + 1)
+    t = days / C.DAYS_PER_MONTH
+    burden = model.simulate_patient(t, p)
+    iv = np.vstack([s.intervals("pre"), s.intervals("post")])
+    return pd.DataFrame({"tumor_burden": burden,
+                         "CA125": burden * np.exp(rng.normal(0, noise_sd, days.size)),
+                         "time": days,
+                         "treatment_applied": drug_on(t, iv).astype(int),
+                         "patient": p.patient_id, "model": p.model, **(seeds or {}),
+                         "phase": np.where(t < s.t_surgery, "pre", "post"),
+                         "noise_sd_log": noise_sd})
 
 
 def generate_longitudinal(model: BaseModel, p: PatientParameters, rng,
-                          noise_sd=C.NOISE_SD_LOG, cutoff=C.CA125_CUTOFF):
-    """CA-125 readings for one patient, and a truth record.
+                          noise_sd=C.NOISE_SD_LOG, cutoff=C.CA125_CUTOFF, seeds=None):
+    """The daily data of one patient, plus its clinic readings and truth record.
 
-    Recurrence is detected at the first surveillance reading >= cutoff; one confirming visit
-    follows a month later, then follow-up stops.
+    Clinic readings are the rows on visit days (flagged visit = 1), so a visit shows exactly the
+    CA125 of that day. Recurrence is detected at the first surveillance reading >= cutoff; one
+    confirming visit follows a month later, then clinic visits stop. The daily rows always run
+    to the end of follow-up. Patient parameters, schedule and true recurrence are added as
+    constant columns.
     """
     s = p.schedule
-    t = visit_times(p, rng)
-    true = model.simulate_patient(t, p)
-    noisy = true * np.exp(rng.normal(0, noise_sd, t.size))
-    obs = pd.DataFrame(dict(patient=p.patient_id, month=np.round(t, 4),
-                            phase=np.where(t < s.t_surgery, "pre", "post"),
-                            ca125=noisy, ca125_true=true))
-    is_surv = obs.month > s.t_end + 1e-6
-    hit = obs[is_surv & (obs.ca125 >= cutoff)]
+    daily = daily_table(model, p, rng, noise_sd, seeds)
+    vdays = np.unique(np.clip(np.round(visit_times(p, rng) * C.DAYS_PER_MONTH).astype(int),
+                              0, daily.time.iloc[-1]))
+    d = daily.set_index("time")
+    is_surv = vdays / C.DAYS_PER_MONTH > s.t_end + 1e-6
+    hit = vdays[is_surv & (d.loc[vdays, "CA125"].values >= cutoff)]
     t_det = np.inf
-    if len(hit):
-        t_det = float(hit.month.iloc[0])
-        obs = obs[~is_surv | (obs.month <= t_det + 1e-6)]
-        tc = t_det + 1.0
-        Tc = float(model.simulate_patient([tc], p)[0])
-        obs = pd.concat([obs, pd.DataFrame([dict(
-            patient=p.patient_id, month=round(tc, 4), phase="post",
-            ca125=Tc * float(np.exp(rng.normal(0, noise_sd))), ca125_true=Tc)])],
-            ignore_index=True)
+    if hit.size:
+        t_det = hit[0] / C.DAYS_PER_MONTH
+        vdays = vdays[~is_surv | (vdays <= hit[0])]
+        if hit[0] + C.DAYS_PER_MONTH in d.index:
+            vdays = np.append(vdays, hit[0] + C.DAYS_PER_MONTH)
+    daily["visit"] = daily.time.isin(vdays).astype(int)
     tau = recurrence_time(model, p, cutoff)
-    truth = dict(**p.to_record(), true_recurrence_abs=tau,
+    truth = dict(**p.to_record(), **(seeds or {}), true_recurrence_abs=tau,
                  true_recurrence_rel=tau - s.t_end, t_detected=t_det)
-    return obs.reset_index(drop=True), truth
+    for k, v in truth.items():
+        if k not in daily.columns:
+            daily[k] = v
+    return daily, readings(daily), truth
+
+
+def readings(data):
+    """Clinic readings (visit = 1 rows) in the shape calibration uses."""
+    v = data[data.visit == 1]
+    return pd.DataFrame(dict(patient=v.patient.values, day=v.time.values,
+                             month=np.round(v.time.values / C.DAYS_PER_MONTH, 4),
+                             phase=v.phase.values, ca125=v.CA125.values,
+                             ca125_true=v.tumor_burden.values))
+
+
+def truth_table(data):
+    """One row per patient: parameters, schedule, seeds and true recurrence."""
+    per_day = set(DAILY_COLUMNS) | {"phase", "visit", "noise_sd_log"}
+    cols = [c for c in data.columns if c not in per_day]
+    return data.groupby("patient", sort=False)[cols[1:]].first().reset_index()
 
 
 def generate_cohort(model: BaseModel, n=C.N_PATIENTS, seed=C.SEED):
-    """Returns (readings, truth, treatments) DataFrames."""
-    rng = np.random.default_rng(seed)
-    all_obs, truths, treats = [], [], []
+    """Returns (data, readings, truth): data has one row per patient-day.
+
+    Each patient gets its own seed (drawn from the cohort seed), so one patient can be
+    regenerated on its own with generate_patient(model, pid, patient_seed).
+    """
+    patient_seeds = np.random.default_rng(seed).integers(0, 2**31 - 1, n)
+    days = []
     for i in range(n):
-        p = sample_parameters(rng, model, f"SYN{i + 1:02d}")
-        obs, truth = generate_longitudinal(model, p, rng)
-        all_obs.append(obs)
-        truths.append(truth)
-        treats.append(treatment_table(p))
-    return (pd.concat(all_obs, ignore_index=True), pd.DataFrame(truths),
-            pd.concat(treats, ignore_index=True))
+        _, (daily, _, _) = generate_patient(model, f"SYN{i + 1:02d}", int(patient_seeds[i]), seed)
+        days.append(daily)
+    data = pd.concat(days, ignore_index=True)
+    return data, readings(data), truth_table(data)
 
 
-def save(obs, truth, treatments, folder=DATA):
+def generate_patient(model: BaseModel, patient_id, patient_seed, cohort_seed=None):
+    """Parameters and data of one patient from its own seed."""
+    rng = np.random.default_rng(patient_seed)
+    p = sample_parameters(rng, model, patient_id)
+    seeds = dict(cohort_seed=cohort_seed, patient_seed=patient_seed)
+    return p, generate_longitudinal(model, p, rng, seeds=seeds)
+
+
+def save(data, folder=DATA):
+    """data/synthetic_data.csv: the four core columns first, then the auxiliary ones."""
     folder.mkdir(exist_ok=True)
-    obs[["patient", "month", "phase", "ca125"]].to_csv(folder / "synthetic_ca125.csv", index=False)
-    treatments.to_csv(folder / "synthetic_treatments.csv", index=False)
-    obs.to_csv(folder / "synthetic_ca125_with_truth.csv", index=False)
-    truth.to_csv(folder / "synthetic_truth.csv", index=False)
+    cols = DAILY_COLUMNS + [c for c in data.columns if c not in DAILY_COLUMNS]
+    data[cols].to_csv(folder / DATA_FILE, index=False, float_format="%.6g")
 
 
 def load(folder=DATA):
-    obs = pd.read_csv(folder / "synthetic_ca125_with_truth.csv")
-    truth = pd.read_csv(folder / "synthetic_truth.csv")
-    return obs, truth
+    """Returns (readings, truth) rebuilt from data/synthetic_data.csv."""
+    data = pd.read_csv(folder / DATA_FILE)
+    return readings(data), truth_table(data)
 
 
 def summary(obs, truth):
@@ -193,8 +232,8 @@ def summary(obs, truth):
 
 
 def main(model_name="growth_death", n=C.N_PATIENTS, seed=C.SEED):
-    obs, truth, treatments = generate_cohort(get_model(model_name), n, seed)
-    save(obs, truth, treatments)
+    data, obs, truth = generate_cohort(get_model(model_name), n, seed)
+    save(data)
     print(summary(obs, truth))
     return obs, truth
 

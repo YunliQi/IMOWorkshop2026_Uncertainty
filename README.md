@@ -34,16 +34,32 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
      after surgery; 3 ACT cycles with the same 0–1 month gaps.
    - **Gates** (a failing draw is redrawn): surgery must be a clear jump, CA-125 after/before in
      [0.05, 0.8]; true CA-125 must stay ≥ 5 U/mL until the end of ACT.
-2. **Longitudinal data** (`generator.generate_longitudinal`): the model is simulated before
-   surgery, the state is multiplied by q at surgery, then simulated after surgery with the
-   post-surgery parameters. CA-125 is read at each visit with 15% multiplicative noise; the first
-   surveillance reading ≥ 35 counts as detected recurrence (one confirm visit, then follow-up stops).
+2. **Longitudinal data** (`generator.generate_longitudinal`): the model is simulated day by day
+   before surgery, the state is multiplied by q at surgery, then simulated after surgery with the
+   post-surgery parameters, up to 36 months after the end of ACT. CA-125 = model value with 15%
+   multiplicative noise. Clinic visits (flagged `visit = 1`) are at each cycle start, around
+   surgery, at the end of ACT and every ~3 months after; the first surveillance reading ≥ 35
+   counts as detected recurrence (one confirm visit, then visits stop).
 3. **Calibration** (`calibration.calibrate_cohort`): least squares on RMSE, as in the poster code:
    T0 of each segment = its first reading; readings below 35 count as 0 and are left out of the RMSE.
 
-Outputs: `data/synthetic_ca125.csv` (readings), `data/synthetic_treatments.csv` (NACT/ACT
-cycles with start and end month, and surgery), `data/synthetic_truth.csv` (true parameters and
-recurrence times), `results/calibration.csv`, `figures/0–2_*.png`.
+## Data format
+
+`data/synthetic_data.csv`, one row per patient per day:
+
+| Column | Meaning |
+|---|---|
+| `tumor_burden` | value of the generating model (noise-free) |
+| `CA125` | `tumor_burden` with assay noise |
+| `time` | day since the first NACT cycle |
+| `treatment_applied` | D(t): 1 while a treatment cycle is on, else 0 |
+| `patient`, `model`, `cohort_seed`, `patient_seed` | who and how it was generated (`generator.generate_patient(model, patient, patient_seed)` regenerates one patient) |
+| `phase`, `visit` | `pre`/`post` surgery; 1 on clinic-visit days (the readings calibration uses) |
+| `noise_sd_log`, `gamma_pre`, `delta_pre`, `gamma_post`, `delta_post`, `ca125_0`, `q_surgery` | parameters used |
+| `nact_starts`, `t_surgery`, `act_starts`, `t_end` | schedule, in months |
+| `true_recurrence_abs`, `true_recurrence_rel`, `t_detected` | true and detected recurrence, in months (`inf` = none) |
+
+Other outputs: `results/calibration.csv`, `figures/0–2_*.png`.
 
 ## Adding a model
 

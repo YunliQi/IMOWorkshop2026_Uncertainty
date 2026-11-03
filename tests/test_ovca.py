@@ -80,11 +80,46 @@ def test_new_model_through_generator_and_calibration():
     p = generator.sample_parameters(np.random.default_rng(3), m, "L", population=dict(
         names=["r_pre", "delta_pre", "r_post", "delta_post"], median=[0.3, 1.2, 0.3, 1.2],
         sd_log=[0.01] * 4, corr=np.eye(4)))
-    obs, truth = generator.generate_longitudinal(m, p, np.random.default_rng(4), noise_sd=0.0)
+    daily, obs, truth = generator.generate_longitudinal(m, p, np.random.default_rng(4), noise_sd=0.0)
     assert np.isfinite(obs.ca125).all() and truth["model"] == "logistic_test"
     t, y, iv = calibration.segment_data(obs, p.schedule, "pre")
     f = calibration.fit_segment(m, t, y, iv)
     assert f["fitted"] and f["rmse"] < 1e-3 * y.max()
+
+
+def test_daily_table_format():
+    m = get_model("growth_death")
+    rng = np.random.default_rng(5)
+    p = generator.sample_parameters(rng, m, "D")
+    daily, obs, _ = generator.generate_longitudinal(m, p, rng)
+    assert list(daily.columns[:4]) == generator.DAILY_COLUMNS
+    assert (np.diff(daily.time) == 1).all() and daily.time.iloc[0] == 0
+    # D(t) = 1 for exactly 30 days per cycle
+    n_cycles = len(p.schedule.nact_starts) + len(p.schedule.act_starts)
+    assert daily.treatment_applied.sum() == n_cycles * generator.C.DAYS_PER_MONTH
+    # clinic readings are the daily values on visit days
+    d = daily.set_index("time")
+    assert np.allclose(obs.ca125.values, d.loc[obs.day, "CA125"].values)
+
+
+def test_patient_seed_reproduces_patient():
+    m = get_model("growth_death")
+    data, _, truth = generator.generate_cohort(m, n=3, seed=11)
+    r = truth.iloc[2]
+    _, (d2, _, _) = generator.generate_patient(m, r.patient, int(r.patient_seed), 11)
+    assert np.allclose(data[data.patient == r.patient].CA125.values, d2.CA125.values)
+
+
+def test_save_and_load_roundtrip(tmp_path=None):
+    import tempfile
+    folder = Path(tmp_path or tempfile.mkdtemp())
+    m = get_model("growth_death")
+    data, obs, truth = generator.generate_cohort(m, n=2, seed=12)
+    generator.save(data, folder)
+    obs2, truth2 = generator.load(folder)
+    assert len(obs2) == len(obs) and np.allclose(obs2.ca125, obs.ca125, rtol=1e-5)
+    assert list(truth2.patient) == list(truth.patient)
+    assert np.allclose(truth2.q_surgery, truth.q_surgery, rtol=1e-5)
 
 
 if __name__ == "__main__":
