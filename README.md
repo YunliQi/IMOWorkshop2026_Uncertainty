@@ -10,6 +10,68 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python tests/test_ovca.py     # or: .venv/bin/python -m pytest tests -q
 ```
 
+## Usage
+
+Run everything (generate 60 patients → RMSE calibration → figures):
+
+```bash
+.venv/bin/python run_pipeline.py                      # defaults from ovca/config.py
+.venv/bin/python run_pipeline.py --n 100 --seed 1     # other cohort size / seed
+.venv/bin/python run_pipeline.py --gen-model growth_death --fit-model growth_death
+```
+
+From Python (run from the repository root):
+
+```python
+import numpy as np
+from ovca import generator, calibration
+from ovca.models import get_model
+from ovca.patient import PatientParameters, Schedule
+
+model = get_model("growth_death")        # any model registered in ovca/models/__init__.py
+
+# --- generate synthetic data ---
+# a cohort: parameters drawn from config.POPULATION, gates applied, one seed per patient
+data, readings, truth = generator.generate_cohort(model, n=60, seed=2026)
+generator.save(data)                     # -> data/synthetic_data.csv (format below)
+readings, truth = generator.load()       # read it back later
+
+# one patient again from its seed (the patient_seed column)
+p, (daily, obs, tr) = generator.generate_patient(model, "SYN01", patient_seed=123)
+
+# one patient from parameters you choose (times in months)
+p = PatientParameters(
+    patient_id="P1", model="growth_death",
+    theta_pre={"gamma": 0.10, "delta": 0.90},     # before surgery
+    theta_post={"gamma": 0.10, "delta": 0.50},    # after surgery
+    ca125_0=800.0, q_surgery=0.2,
+    schedule=Schedule(nact_starts=[0, 1, 3], t_surgery=5, act_starts=[6, 7, 9]))
+daily, obs, tr = generator.generate_longitudinal(model, p, np.random.default_rng(0))
+
+# --- calibrate a model to the data (RMSE, each segment separately) ---
+fits = calibration.calibrate_cohort(model, readings, truth)   # truth supplies each schedule
+r = truth.iloc[0]
+one = calibration.calibrate_patient(model, readings[readings.patient == r.patient],
+                                    Schedule.from_record(r))
+calibration.recovery_table(fits, truth, model.param_names)    # fitted vs true
+
+# --- simulate a model directly ---
+t = np.linspace(0, 20, 200)                                    # months
+model.simulate_patient(t, p)                                   # both segments + surgery jump
+model.simulate_segment(t, 0.0, 500.0, {"gamma": 0.1, "delta": 0.9},
+                       Schedule([0, 1], 3, []).intervals("pre"))   # one segment
+```
+
+What each returns:
+
+| Call | Returns |
+|---|---|
+| `generate_cohort` | `data` (one row per patient-day), `readings` (clinic visits only: patient, day, month, phase, ca125, ca125_true), `truth` (one row per patient) |
+| `generate_patient` | `(PatientParameters, (daily, readings, truth_dict))` |
+| `calibrate_cohort` | one row per patient: `<param>_pre/_post`, `rmse_*`, `n_used_*` (readings ≥ 35 used), `fitted_*`, `at_bound_*` |
+
+To change cohort size, noise, schedule rules, gates or the population, edit `ovca/config.py`.
+
 ## Layout
 
 | File | What it does |
