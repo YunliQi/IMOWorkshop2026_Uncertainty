@@ -46,16 +46,21 @@ def _split(s):
 
 @dataclass
 class Schedule:
-    """NACT cycles -> surgery -> ACT cycles (start times in months from the first NACT visit)."""
+    """NACT cycles -> surgery -> ACT cycles (start times in months from the first NACT visit).
+    bev_starts: cycle starts that include bevacizumab (optional; only the resistance model
+    uses them)."""
     nact_starts: np.ndarray
     t_surgery: float
     act_starts: np.ndarray
     duration: float = C.TREATMENT_DURATION
+    bev_starts: np.ndarray = None
 
     def __post_init__(self):
         self.nact_starts = np.asarray(self.nact_starts, dtype=float)
         self.act_starts = np.asarray(self.act_starts, dtype=float)
         self.t_surgery = float(self.t_surgery)
+        self.bev_starts = np.asarray([] if self.bev_starts is None else self.bev_starts,
+                                     dtype=float)
 
     @property
     def t_end(self):
@@ -67,13 +72,23 @@ class Schedule:
         return merge_intervals(self.nact_starts if phase == "pre" else self.act_starts,
                                self.duration)
 
+    def bev_intervals(self):
+        """Bevacizumab-on intervals: one treatment duration after each BEV cycle start."""
+        return merge_intervals(self.bev_starts, self.duration)
+
     def to_record(self):
-        return dict(nact_starts=_join(self.nact_starts), t_surgery=self.t_surgery,
-                    act_starts=_join(self.act_starts), t_end=self.t_end)
+        out = dict(nact_starts=_join(self.nact_starts), t_surgery=self.t_surgery,
+                   act_starts=_join(self.act_starts), t_end=self.t_end)
+        if self.bev_starts.size:
+            out["bev_starts"] = _join(self.bev_starts)
+        return out
 
     @classmethod
     def from_record(cls, r):
-        return cls(_split(r["nact_starts"]), r["t_surgery"], _split(r["act_starts"]))
+        bev = r.get("bev_starts", "")
+        bev = _split(bev) if isinstance(bev, str) else []
+        return cls(_split(r["nact_starts"]), r["t_surgery"], _split(r["act_starts"]),
+                   bev_starts=bev)
 
 
 @dataclass

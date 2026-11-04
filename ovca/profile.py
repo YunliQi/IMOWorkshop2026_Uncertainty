@@ -28,6 +28,7 @@ PARAMETERS = {
     "level_pre": "tumour burden at the first pre-surgery reading (U/mL)",
     "level_post": "tumour burden at the first post-surgery reading (U/mL)",
     "sigma": "observation error: sd of log CA-125 around the model (a number = fixed)",
+    "b0": "background CA-125 not made by the tumour (U/mL; models with background only)",
 }
 
 # Default priors of the model parameters, per model (natural scale, before surgery).
@@ -36,7 +37,19 @@ MODEL_PRIORS = {
         "gamma_pre": {"dist": "lognormal", "median": 0.10, "sd_log": 0.7},
         "delta_pre": {"dist": "lognormal", "median": 0.80, "sd_log": 0.5},
     },
+    "poptk": {   # growth per month; kill = log10 kill per dose (median cell); het = sd of log10
+        "growth_pre": {"dist": "lognormal", "median": 0.15, "sd_log": 0.7},   # sensitivity
+        "kill_pre": {"dist": "lognormal", "median": 0.30, "sd_log": 0.7},
+        "het_pre": {"dist": "lognormal", "median": 0.15, "sd_log": 0.8},
+    },
+    "resistance": {   # per month: g growth (table 0.008/day), k kill on S during a pulse
+        "g_pre": {"dist": "lognormal", "median": 0.24, "sd_log": 0.7},    # (0.4/day), rho =
+        "k_pre": {"dist": "lognormal", "median": 12.0, "sd_log": 0.7},    # R0/S0 (1%, range
+        "rho_pre": {"dist": "lognormal", "median": 0.01, "sd_log": 1.5},  # 0.1-17%)
+    },
 }
+# background CA-125 (normal range 10-35; many nadirs in our data are below 15)
+B0_PRIOR = {"dist": "lognormal", "median": 8.0, "sd_log": 0.6}
 COMMON_PRIORS = {
     "level_pre": {"dist": "lognormal", "median": "first_reading", "sd_log": 1.0},
     "level_post": {"dist": "lognormal", "median": "first_reading", "sd_log": 1.0},
@@ -56,10 +69,16 @@ def _model_priors(model):
 def default_profile(model="growth_death", backend="abc"):
     """A complete profile with every key at its default value."""
     m = get_model(model) if isinstance(model, str) else model
-    shift_params = [p for p in m.param_names if p in C.ABC_SHIFT_PARAMS] or list(m.param_names)
+    if m.default_shift_params is not None:
+        shift_params = list(m.default_shift_params)
+    else:
+        shift_params = ([p for p in m.param_names if p in C.ABC_SHIFT_PARAMS]
+                        or list(m.param_names))
     priors = _model_priors(m)
     priors.update({f"shift_{p}": dict(SHIFT_PRIOR) for p in shift_params})
     priors.update(copy.deepcopy(COMMON_PRIORS))
+    if getattr(m, "background", False):
+        priors["b0"] = dict(B0_PRIOR)
     return {
         "backend": backend,
         "model": m.name,
@@ -260,7 +279,8 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
 
     # priors
     dists = {}
-    positive = {f"{p}_pre" for p in model.param_names} | {"level_pre", "level_post", "sigma"}
+    positive = ({f"{p}_pre" for p in model.param_names}
+                | {"level_pre", "level_post", "sigma", "b0"})
     for name, spec in out["priors"].items():
         d = check_prior(name, spec, errors, name in positive, name.startswith("level_"))
         if d is not None:

@@ -6,6 +6,8 @@ Parameters (sampled on the unconstrained scale u, see priors.py):
     level_pre    tumour burden at the anchor of the pre-surgery segment (its first reading)
     level_post   tumour burden at the anchor of the post-surgery segment (its first reading)
     sigma        observation error
+    b0           background CA-125 (models with `background` only): CA-125 = tumour + b0,
+                 and the levels above are the tumour part
 There is no surgery-fraction parameter: the post-surgery level comes from the post-surgery
 readings. Before the first post-surgery reading (post_mode "pre_only") only the pre-surgery
 segment is fitted; shifts and level_post are not sampled and every post-surgery quantity (curve
@@ -68,6 +70,8 @@ class InferenceProblem:
                    + ["level_pre", "level_post", "sigma"])
         else:
             use = [f"{p}_pre" for p in self.model.param_names] + ["level_pre", "sigma"]
+        if "b0" in profile["priors"]:
+            use.append("b0")
         dists, fixed = {}, {}
         for n in use:
             spec = normalise(profile["priors"][n])
@@ -94,7 +98,7 @@ class InferenceProblem:
         nat = self.prior.natural(u)
         m, s = self.model, self.schedule
         th_pre = {p: nat[f"{p}_pre"] for p in m.param_names}
-        g_pre = m.log_growth_batch([self.a_pre, s.t_surgery], 0.0, th_pre, s.intervals("pre"))
+        g_pre = m.segment_log_growth([self.a_pre, s.t_surgery], 0.0, th_pre, s, "pre")
         log_c0 = np.log(nat["level_pre"]) - g_pre[:, 0]
         if self.post_mode == "pre_only":          # nothing known after surgery yet
             nan = np.full(len(log_c0), np.nan)
@@ -102,10 +106,16 @@ class InferenceProblem:
         th_post = {p: th_pre[p] * np.exp(nat[f"shift_{p}"]) if p in self.sp else th_pre[p]
                    for p in m.param_names}
         log_ts_minus = log_c0 + g_pre[:, 1]
-        g_post = m.log_growth_batch([self.a_post], s.t_surgery, th_post, s.intervals("post"))
+        g_post = m.segment_log_growth([self.a_post], s.t_surgery, th_post, s, "post")
         log_ts_plus = np.log(nat["level_post"]) - g_post[:, 0]
         q = np.exp(np.clip(log_ts_plus - log_ts_minus, -700, 700))   # derived, not a parameter
         return th_pre, th_post, np.exp(log_c0), q, nat["sigma"]
+
+    def background(self, u):
+        """Background CA-125 b0 per draw, (N,); 0 for models without one."""
+        nat = self.prior.natural(u)
+        n = len(np.atleast_2d(u))
+        return np.broadcast_to(np.asarray(nat.get("b0", 0.0), float), (n,))
 
     def natural(self, u):
         """Every parameter in natural units, as a dict of arrays (also the derived ones)."""
@@ -114,14 +124,16 @@ class InferenceProblem:
         out = {f"{p}_pre": v for p, v in th_pre.items()}
         out.update({f"{p}_post": v for p, v in th_post.items()})
         out.update({f"shift_{p}": np.log(th_post[p] / th_pre[p]) for p in self.model.param_names})
-        lvl = self.simulate(u, [self.a_pre, self.a_post_report])
+        lvl = self.simulate(u, [self.a_pre, self.a_post_report], background=False)
         out.update(level_pre=lvl[:, 0], level_post=lvl[:, 1], ca125_0=c0, surgery_jump=q,
                    sigma=np.broadcast_to(sigma, c0.shape).copy())
+        if "b0" in nat:
+            out["b0"] = np.broadcast_to(nat["b0"], c0.shape).copy()
         return out
 
     # ---- simulation and likelihood -----------------------------------------------------
-    def simulate(self, u, t):
-        """Noise-free tumour burden (N, len(t))."""
+    def simulate(self, u, t, background=True):
+        """Noise-free CA-125 (N, len(t)); background=False: the tumour part only."""
         th_pre, th_post, c0, q, _ = self.components(u)
         t = np.atleast_1d(np.asarray(t, dtype=float))
         if self.post_mode == "pre_only":
@@ -129,18 +141,24 @@ class InferenceProblem:
             out = np.full((len(c0), t.size), np.nan)
             pre = t < s.t_surgery
             if pre.any():
-                g = self.model.log_growth_batch(t[pre], 0.0, th_pre, s.intervals("pre"))
+                g = self.model.segment_log_growth(t[pre], 0.0, th_pre, s, "pre")
                 out[:, pre] = np.exp(np.log(c0)[:, None] + g)
-            return out
-        return self.model.simulate_patient_batch(t, self.schedule, th_pre, th_post, c0, q)
+        else:
+            out = self.model.simulate_patient_batch(t, self.schedule, th_pre, th_post, c0, q)
+        if background and "b0" in self.prior.names + list(self.prior.fixed):
+            out = out + self.background(u)[:, None]
+        return out
 
     def recurrence(self, u, followup):
         """Absolute month when the model curve reaches the cutoff after ACT (inf = never)."""
         th_pre, th_post, c0, q, _ = self.components(u)
         if self.post_mode == "pre_only":
             return np.full(len(c0), np.nan)
+        cutoff = self.cutoff
+        if "b0" in self.prior.names + list(self.prior.fixed):   # tumour part to reach
+            cutoff = self.cutoff - self.background(u)
         return self.model.recurrence_time_batch(self.schedule, th_pre, th_post, c0, q,
-                                                self.cutoff, followup)
+                                                cutoff, followup)
 
     def loglik(self, u):
         """Weighted log-likelihood of the readings, (N,)."""
