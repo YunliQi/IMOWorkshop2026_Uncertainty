@@ -72,6 +72,96 @@ What each returns:
 
 To change cohort size, noise, schedule rules, gates or the population, edit `ovca/config.py`.
 
+## Forecasting tool (`ovca.Forecaster`, `tool_demo.ipynb`)
+
+Inputs: one patient's readings, a model, any time point, and optionally a time decay. Outputs:
+- the posterior of the parameters;
+- tumour-burden / CA-125 bands over time;
+- a recurrence interval;
+- a suggested month for the next visit.
+
+After a new reading, `step` refits and reports how much the uncertainty shrank. `replay` refits
+after every visit. Install once with `uv pip install --python .venv/bin/python -e .`; after that
+`import ovca` works from any folder.
+
+```python
+import pandas as pd
+from ovca import Forecaster, PatientRecord, default_profile, check_profile
+
+rec = PatientRecord.from_synthetic(pd.read_csv("data/synthetic_data.csv"), "SYN38")
+# or PatientRecord.from_arrays(pid, t_months, ca125, nact_starts, t_surgery, act_starts)
+
+profile = default_profile("growth_death", backend="abc")    # every setting, with defaults
+profile["priors"]["gamma_pre"] = {"dist": "lognormal", "median": 0.05, "sd_log": 0.5}
+profile["priors"]["sigma"] = 0.15                         # a number = fixed (default: estimated)
+profile["data"]["decay_tau"] = 12                         # optional time decay (months)
+profile = check_profile(profile)                          # prints the priors; errors name the problem
+
+fc = Forecaster(profile)
+snap = fc.fit(rec, t_now=rec.schedule.t_end)              # at the end of ACT
+snap.report()            # recurrence interval, P(recur in 6 / 12 mo), next visit, band there
+snap.summary()           # posterior quantiles of every parameter
+snap2 = fc.step(snap, t_new=14.0, y_new=3.1)              # a new reading
+snap2.shrinkage()        # band and recurrence-interval width before / after, surprise
+hist = fc.replay(rec)    # refit after every visit (~0.1 s per fit)
+hist.table(); hist.parameter_table()
+hist.plot_tube("tube.png"); hist.plot_panels("panels.png")
+hist.plot_parameters("params.png"); hist.plot_parameter_space("space.png")
+```
+
+**Model** (`ovca/problem.py`), shared by every backend:
+- **Parameters:** the model's parameters before surgery (`gamma_pre`, `delta_pre`) and the surgery shifts `shift_gamma`, `shift_delta` (log post = log pre + shift).
+- **Levels:** `level_pre` and `level_post`, the tumour burden at each segment's first reading. There is no surgery fraction q: the post-surgery level is a free parameter.
+- **Observation error:** `sigma`, estimated by default. Readings follow log y = log T(t) + σ·ε.
+- **Before the first post-surgery reading:** only the pre-surgery part is fitted. Nothing is forecast after surgery (bands, recurrence interval and next visit are empty) until that reading is in.
+
+**Profile** (`ovca/profile.py`): one dict holds everything:
+- `backend`, `model`;
+- `priors` (one entry per parameter: lognormal / normal / halfnormal / uniform / a number = fixed) and `correlations`;
+- `surgery`, `initial_level`, `data` (`censor_below`, `decay_tau`, `cutoff`);
+- `abc`, `mcmc`, `forecast`, `next_visit`, `seed`.
+
+`check_profile` catches unknown or misspelt keys and suggests the right one. It also catches:
+- priors that don't match the model's parameters;
+- invalid distributions or arguments;
+- positive parameters given a prior that allows negative values;
+- shifts that are not model parameters;
+- settings that the chosen backend doesn't use.
+
+**Backends** (`ovca/backends/`):
+- **`abc`:** ABC-SMC. By default the acceptance kernel is the observation-error density (Wilkinson 2013), tempered from wide to exact, with Metropolis moves under a Gaussian perturbation kernel. This lets σ be estimated. `abc.acceptance = "threshold"` is classic distance < ε ABC-SMC: simulations include noise with a fixed σ. It gives slightly wider intervals and is about 15× slower.
+- **`mcmc`:** an empty slot for the team. Interface and checklist: [docs/BACKEND_GUIDE.md](docs/BACKEND_GUIDE.md).
+
+On the 30 test patients (SYN31–60), the 80% intervals contain the true value 70–93% of the
+time across parameters. The recurrence interval contains it 93% of the time at the end of ACT.
+The median σ estimate is 0.15 (true 0.15).
+
+## ABC-SMC forecasts, first version (`abc_smc.ipynb`)
+
+The first version, kept for reference: `ovca/abc_smc.py`, with a surgery fraction `q` and a
+fixed noise. New work should use the forecasting tool above.
+
+`ovca/abc_smc.py` gives, for one patient at any time point `t_now`: the posterior of the model
+parameters (ABC-SMC), a forecast of CA-125 and of recurrence with intervals, a suggested time for
+the next CA-125 visit, and an update once that reading is in. Surgery is a jump (`q`) plus a
+shift of the model parameters on the log scale (`shift_*`). Readings below 35 are used as they are
+(`censor_below=35` treats them as "below 35" only); optional time decay down-weights old readings.
+[`abc_smc.ipynb`](abc_smc.ipynb) is the pipeline, figures and usage guide (runs in ~7 min):
+
+```bash
+uv pip install --python .venv/bin/python nbformat nbconvert ipykernel   # to run the notebook
+.venv/bin/jupyter nbconvert --to notebook --execute --inplace abc_smc.ipynb
+```
+
+```python
+from ovca import abc_smc as A
+post = A.fit(model, t_obs, y_obs, schedule, t_now=schedule.t_end,
+             prior=A.prior_for(A.default_prior_spec(model), y_obs[0]))
+fc = post.forecast()
+fc.recurrence_interval(0.8); fc.next_visit(rule="risk", p=0.10)
+post = post.update(t_new, y_new)
+```
+
 ## Layout
 
 | File | What it does |
@@ -83,6 +173,12 @@ To change cohort size, noise, schedule rules, gates or the population, edit `ovc
 | `ovca/models/__init__.py` | model registry (`get_model("growth_death")`) |
 | `ovca/generator.py` | parameter set → longitudinal CA-125 data (noise, surveillance, recurrence detection, true recurrence time) |
 | `ovca/calibration.py` | RMSE fit of a model to the data, each segment separately |
+| `ovca/abc_smc.py` | first-version ABC-SMC (with q, fixed noise), used by `abc_smc.ipynb` |
+| `ovca/forecaster.py` | the tool: `Forecaster` (`fit`, `step`, `replay`), `Snapshot`, `History` |
+| `ovca/profile.py`, `ovca/priors.py` | profiles (`default_profile`, `check_profile`) and prior distributions |
+| `ovca/record.py`, `ovca/problem.py` | `PatientRecord` (input) and the shared probabilistic model |
+| `ovca/backends/` | `abc_smc.py` (ABC-SMC), `mcmc.py` (to be written, see `docs/BACKEND_GUIDE.md`) |
+| `ovca/forecast.py`, `ovca/viz.py` | forecasts (bands, recurrence, next visit, surprise) and figures |
 | `ovca/plots.py` | figures in `figures/` |
 | `run_pipeline.py` | runs everything; `--gen-model` and `--fit-model` can differ |
 

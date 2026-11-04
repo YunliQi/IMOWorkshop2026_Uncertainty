@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ovca"
+version = "0.2.0"
+description = "Bayesian forecasts of CA-125 and recurrence for HGSOC patients (ABC-SMC; MCMC backend planned)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pandas", "matplotlib"]
+
+[project.optional-dependencies]
+mcmc = ["pymc", "arviz"]
+notebook = ["nbformat", "nbconvert", "ipykernel"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["ovca*"]
