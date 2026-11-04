@@ -611,10 +611,7 @@ def recurrence_cdfs(hist, path=None, until=0.9, xmax=None, facet=True, ncol=4):
         ax.set_ylim(0, 1.02)
         ax.set_xlabel("months since diagnosis")
         ax.set_ylabel("P(recurred by then)")
-        skipped = len(known) - sum(known)
-        ax.set_title(f"{record.patient_id}: P(recurred)  "
-                     + (f"\n{skipped} "
-                        if skipped else ""), loc="left", fontsize=10)
+        ax.set_title(f"{record.patient_id}: P(recurred)", loc="left", fontsize=10)
         return _save(fig, path)
 
 
@@ -700,7 +697,7 @@ def recurrence_densities(hist, path=None, until=None, levels=REC_LEVELS, xmax=No
             _clean_log(ax, "x")
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(-0.1, n)
-        ax.set_xlabel("Probability of recurrance at months since diagnosis" + (" (log scale)" if log_x else ""))
+        ax.set_xlabel("Probability of recurrence at months since diagnosis" + (" (log scale)" if log_x else ""))
         ax.legend(fontsize=8, frameon=False, loc="upper right", ncol=4)
         fig.tight_layout()
         return _save(fig, path)
