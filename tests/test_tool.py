@@ -339,11 +339,16 @@ def test_replay_tables(record, history):
         assert (rows.q10 <= rows.q50).all() and (rows.q50 <= rows.q90).all()
 
 
-@pytest.mark.parametrize("method", ["plot_tube", "plot_panels", "plot_parameters", "plot_parameter_space", "snapshot"])
+@pytest.mark.parametrize("method", ["plot_tube", "plot_panels", "plot_parameters", "plot_parameter_space",
+                                    "plot_recurrence", "plot_recurrence_cdf", "recurrence_cdf_overlay",
+                                    "snapshot", "snapshot_recurrence", "snapshot_recurrence_cdf"])
 def test_plots_save(history, tmp_path, method):
     assert matplotlib.get_backend().lower() == "agg"
     path = tmp_path / f"{method}.png"
-    plot = history[-1].plot if method == "snapshot" else getattr(history, method)
+    snapshot_plots = {"snapshot": history[-1].plot, "snapshot_recurrence": history[-1].plot_recurrence,
+                      "snapshot_recurrence_cdf": history[-1].plot_recurrence_cdf,
+                      "recurrence_cdf_overlay": lambda path: history.plot_recurrence_cdf(path=path, facet=False)}
+    plot = snapshot_plots.get(method) or getattr(history, method)
     fig = plot(path=path)
     try:
         assert isinstance(fig, matplotlib.figure.Figure)
@@ -351,6 +356,24 @@ def test_plots_save(history, tmp_path, method):
         assert path.stat().st_size > 1000
     finally:
         plt.close(fig)
+
+
+def test_recurrence_times(history, tmp_path):
+    """No-horizon recurrence times: exact and finite for growth_death, consistent with the
+    forecast inside its horizon, NaN (and an empty figure) before a post-surgery reading."""
+    for snap in history.snapshots:
+        rec = snap.recurrence_times(n=2000)
+        if not snap.forecast.post_known:
+            assert np.isnan(rec).all()
+            plt.close(snap.plot_recurrence(path=tmp_path / "empty.png"))
+            plt.close(snap.plot_recurrence_cdf(path=tmp_path / "empty_cdf.png"))
+            continue
+        assert np.isfinite(rec).all() and (rec >= 0).all()
+        end = snap.record.schedule.t_end
+        horizon = max(snap.t_now, end) + snap.followup - end      # the forecast's window
+        share_forecast = np.mean(np.isfinite(snap.forecast.recurrence))
+        assert abs(np.mean(rec <= horizon) - share_forecast) < 0.1
+    assert any(not s.forecast.post_known for s in history.snapshots)   # both cases covered
 
 
 @pytest.mark.skipif(__import__("importlib").util.find_spec("pymc") is None, reason="optional PyMC dependency")

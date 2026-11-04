@@ -156,6 +156,7 @@ two routes:
 
 ```
 Posterior ── resample by weights ──► problem.simulate / recurrence ──► Forecast ──► tube, panels, snap.plot
+    ├────── resample by weights ──► problem.recurrence (no horizon) ──► plot_recurrence, plot_recurrence_cdf
     └────── problem.natural(u) ──► parameter table ──► plot_parameters, plot_parameter_distributions,
                                                          plot_parameter_space
 ```
@@ -170,6 +171,8 @@ hist = fc.replay(record)                     # History: one fit per visit
 hist.plot_tube("tube.png"); hist.plot_panels("panels.png")
 hist.plot_parameters("params.png"); hist.plot_parameter_distributions("post.png")
 hist.plot_parameter_space("space.png")
+snap.plot_recurrence("rec.png"); hist.plot_recurrence("rec_history.png")
+snap.plot_recurrence_cdf("cdf.png"); hist.plot_recurrence_cdf("cdf_history.png")
 hist.table(); hist.parameter_table()         # the numbers behind the figures
 ```
 
@@ -181,6 +184,7 @@ hist.table(); hist.parameter_table()         # the numbers behind the figures
 | `hist.plot_parameters` | `hist.parameter_table()`: weighted quantiles per refit | `natural()` columns + `weights` |
 | `hist.plot_parameter_distributions` | `natural()` resampled with `weights` (1500 draws per refit) | same |
 | `hist.plot_parameter_space` | weighted mean and covariance of pairs of `natural()` columns | same |
+| `snap.plot_recurrence`, `hist.plot_recurrence`, `*.plot_recurrence_cdf` | `snap.recurrence_times()`: each draw's recurrence time with no horizon (exact for growth_death) | draws resampled with `weights`, pushed through `problem.recurrence` |
 
 `natural()` returns every sampled parameter plus the derived ones (`gamma_post`, `delta_post`,
 `ca125_0`, `surgery_jump`, and `level_post` reported at one fixed time for every refit). Those
@@ -202,8 +206,12 @@ are the column names the figures look for.
 | `reference` | `plot_tube`, `plot_panels` | black dashed line: `"auto"` (truth for synthetic, else `"forecast"`), `"forecast"`, `"hindsight"`, `"fit"`, `"none"` |
 | `params` | `plot_parameters`, `plot_parameter_distributions` | which parameters (column names of `natural()`) |
 | `pairs` | `plot_parameter_space` | list of `(x, y, title)` |
-| `ncol` | `plot_panels` | panels per row |
+| `ncol` | `plot_panels`, `hist.plot_recurrence_cdf` | panels per row |
+| `facet` | `hist.plot_recurrence_cdf` | one panel per refit (default); `False`: every refit on one axis, light = early |
 | `noisy` | `snap.plot` | band for readings (with σ) instead of the noise-free tumour |
+| `until` | `plot_recurrence`, `plot_recurrence_cdf` | time axis runs until this share of draws has recurred (default 0.999 for a snapshot; 0.9 for a history, 0.99 with `log_x`) |
+| `levels` | `snap.plot_recurrence`, `hist.plot_recurrence` | central intervals to shade (default 95%, 80%, 50%) |
+| `log_x`, `xmax` | `hist.plot_recurrence` (`xmax` also `hist.plot_recurrence_cdf`) | log time axis (default linear), so early wide and late narrow forecasts both show; fixed axis end |
 
 The functions themselves are in `ovca/viz.py` (`viz.tube(hist, path)` etc., the same as the
 methods). A new model with other parameter names needs entries in `viz.LABELS` (axis titles),

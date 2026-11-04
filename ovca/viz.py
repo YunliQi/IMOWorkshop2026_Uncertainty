@@ -7,7 +7,11 @@
     hist.plot_parameters("params.png")      # each parameter's posterior after every visit
     hist.plot_parameter_space("space.png")  # posterior path in parameter space (80% ellipses)
     hist.plot_parameter_distributions("d.png")  # full posterior of every parameter, per visit
+    hist.plot_recurrence("rec.png")         # recurrence-time density after every refit (ridgeline)
+    hist.plot_recurrence_cdf("cdf.png")     # P(recurred by t) after every refit, one axis
     snap.plot()                             # one snapshot
+    snap.plot_recurrence()                  # recurrence-time density at one snapshot
+    snap.plot_recurrence_cdf()              # P(recurred by t) at one snapshot
 
 True values are drawn when the record has them (synthetic data). Every function returns the
 figure and saves it when a path is given.
@@ -15,8 +19,10 @@ figure and saves it when a path is given.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.ticker import FormatStrFormatter, LogLocator, NullFormatter
+from scipy.stats import gaussian_kde
 
 from .backends.base import wquantile
 
@@ -473,4 +479,225 @@ def parameter_space(hist, path=None, pairs=SPACE_PAIRS):
         fig.suptitle(f"{rec.patient_id}: posterior path in parameter space. Each ring = 80% "
                      f"region after one visit (light = early, dark = late); dots = centres",
                      x=0.01, ha="left", fontsize=11)
+        return _save(fig, path)
+
+
+# ---------------------------------------------------------------- recurrence time
+REC_LEVELS = (0.95, 0.8, 0.5)
+
+
+def _recurrence_density(rec, grid):
+    """KDE of recurrence times (months after ACT) on grid, reflected at 0 (no recurrence before
+    the end of ACT). Bandwidth: Silverman with min(sd, IQR / 1.34), so the long right tail
+    doesn't widen it. Area = share of draws that recur (inf draws can't be in a density)."""
+    finite = rec[np.isfinite(rec)]
+    sd = finite.std() if finite.size > 1 else 0.0
+    if not sd > 0:
+        return np.zeros_like(grid)
+    iqr = np.subtract(*np.quantile(finite, [0.75, 0.25]))
+    spread = min(sd, iqr / 1.34) if iqr > 0 else sd
+    kde = gaussian_kde(finite, bw_method=0.9 * spread * finite.size ** -0.2 / sd)
+    return (kde(grid) + kde(-grid)) * finite.size / rec.size
+
+
+def _recurrence_xmax(rec, until):
+    """Time by which `until` of the draws have recurred (the largest finite time if never)."""
+    x = np.quantile(rec, until, method="inverted_cdf")
+    return float(x) if np.isfinite(x) else float(np.max(rec[np.isfinite(rec)]))
+
+
+def _fill_intervals(ax, grid, density, rec, levels, base=0.0, label=True):
+    """Shade under the density by central intervals: one hue, darker = more central."""
+    levels = sorted(levels, reverse=True)                  # widest first, narrower on top
+    for level, shade in zip(levels, RAMP(np.linspace(0.15, 0.7, len(levels)))):
+        lo, hi = np.quantile(rec, [(1 - level) / 2, (1 + level) / 2], method="inverted_cdf")
+        inside = (grid >= lo) & (grid <= hi)
+        ax.fill_between(grid[inside], base, base + density[inside], color=shade, lw=0,
+                        label=f"{level:.0%} interval" if label else None)
+
+
+def recurrence_density(snap, ax=None, path=None, until=0.999, levels=REC_LEVELS):
+    """Density of the recurrence time at one snapshot, in months since diagnosis (t = 0), shaded
+    by central intervals, up to the month by which `until` of the draws have recurred. The grey
+    line is the end of ACT; nothing recurs before it."""
+    with plt.rc_context(STYLE):
+        fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=(9, 3.8))
+        ax.set_axisbelow(True)                       # grid behind the shading
+        rec, record = snap.recurrence_times(), snap.record
+        t_end = record.schedule.t_end
+        ax.axvline(t_end, color=MUTED, lw=1.4, zorder=0)    # end of ACT
+        ax.set_xlabel("months since diagnosis")
+        ax.set_ylabel("density")
+        if np.isnan(rec).all():                      # no post-surgery reading yet: nothing to show
+            ax.set_xlim(0, max(t_end, snap.t_now) + 12)
+            return _save(fig, path)
+        xmax = t_end + _recurrence_xmax(rec, until)
+        grid = np.linspace(0, xmax, 1500)
+        density = np.where(grid >= t_end, _recurrence_density(rec, grid - t_end), 0.0)
+        _fill_intervals(ax, grid, density, rec + t_end, levels)
+        ax.plot(grid, density, color=RAMP(1.0), lw=1.5)
+        median = t_end + np.quantile(rec, 0.5, method="inverted_cdf")
+        if np.isfinite(median):
+            ax.axvline(median, color=RAMP(1.0), lw=1.2, ls=":", label=f"median {median:.1f}")
+        ax.set_xlim(0, xmax)
+        ax.set_ylim(0, None)
+        ax.legend(fontsize=8, frameon=False, loc="upper right")
+        return _save(fig, path)
+
+
+def _recurrence_cdf(rec, grid):
+    """Share of draws that have recurred by each time on grid (inf = not yet)."""
+    return np.searchsorted(np.sort(rec), grid, side="right") / rec.size
+
+
+def _end_of_act(ax, s):
+    """Unlabelled grey line at the end of ACT."""
+    ax.axvline(s.t_end, color=MUTED, lw=1.4, zorder=0)
+
+
+def recurrence_cdf(snap, ax=None, path=None, until=0.999):
+    """P(recurred by t), t in months since diagnosis, at one snapshot; grey line = end of ACT."""
+    with plt.rc_context(STYLE):
+        fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=(9, 3.8))
+        ax.set_axisbelow(True)                       # grid behind the lines
+        rec, record, pb = snap.recurrence_times(), snap.record, snap.posterior.problem
+        s = record.schedule
+        ax.set_title(f"{record.patient_id}: {len(pb.t)} readings (month {snap.t_now:.1f})",
+                     loc="left", fontsize=9.5)
+        _end_of_act(ax, s)
+        ax.set_ylim(0, 1.02)
+        ax.set_xlabel("months since diagnosis")
+        ax.set_ylabel("P(recurred by then)")
+        if np.isnan(rec).all():
+            ax.text(0.5, 0.5, "no post-surgery reading yet: nothing is forecast after surgery",
+                    transform=ax.transAxes, ha="center", va="center", color=MUTED)
+            ax.set_xlim(0, max(s.t_end, snap.t_now) + 12)
+            return _save(fig, path)
+        xmax = s.t_end + _recurrence_xmax(rec, until)
+        grid = np.linspace(0, xmax, 2000)
+        ax.plot(grid, _recurrence_cdf(rec + s.t_end, grid), color=RAMP(1.0), lw=1.5)
+        ax.set_xlim(0, xmax)
+        return _save(fig, path)
+
+
+def recurrence_cdfs(hist, path=None, until=0.9, xmax=None, facet=True, ncol=4):
+    """P(recurred by t) after every refit, t in months since diagnosis; grey line = end of ACT.
+    facet=True (default): one panel per refit, labelled by the number of readings and the month.
+    facet=False: every refit on
+    one axis, light (early) to dark (late); steeper curves = a sharper forecast. The axis runs
+    until `until` of the draws have recurred in every refit. Refits before the first
+    post-surgery reading have no curve."""
+    rec_all = [s.recurrence_times() for s in hist.snapshots]
+    known = [not np.isnan(r).all() for r in rec_all]
+    record = hist.record
+    t_end = record.schedule.t_end
+    if xmax is None:
+        xmax = t_end + max([_recurrence_xmax(r, until) for r, k in zip(rec_all, known) if k]
+                           + [12.0])
+    grid = np.linspace(0, xmax, 2000)
+    if facet:
+        return _recurrence_cdf_panels(hist, rec_all, known, grid, path, ncol)
+    norm = Normalize(hist.times.min(), hist.times.max())
+    with plt.rc_context(STYLE):
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        _end_of_act(ax, record.schedule)
+        for s, rec, k in zip(hist.snapshots, rec_all, known):
+            if k:
+                ax.plot(grid, _recurrence_cdf(rec + t_end, grid), color=RAMP(norm(s.t_now)),
+                        lw=1.3)
+        cb = fig.colorbar(ScalarMappable(norm=norm, cmap=RAMP), ax=ax, pad=0.01)
+        cb.set_label("month of the update")
+        ax.set_xlim(0, xmax)
+        ax.set_ylim(0, 1.02)
+        ax.set_xlabel("months since diagnosis")
+        ax.set_ylabel("P(recurred by then)")
+        ax.set_title(f"{record.patient_id}: P(recurred)", loc="left", fontsize=10)
+        return _save(fig, path)
+
+
+def _recurrence_cdf_panels(hist, rec_all, known, grid, path, ncol):
+    """recurrence_cdfs(facet=True): one panel per refit, shared axes, as in panels()."""
+    record, snaps = hist.record, hist.snapshots
+    t_end = record.schedule.t_end
+    n = len(snaps)
+    nrow = int(np.ceil(n / ncol))
+    with plt.rc_context(STYLE):
+        fig, axes = plt.subplots(nrow, ncol, figsize=(16, 2.6 * nrow), sharex=True, sharey=True,
+                                 squeeze=False)
+        for ax, s, rec, k in zip(axes.flat, snaps, rec_all, known):
+            ax.set_axisbelow(True)                   # grid behind the lines
+            _end_of_act(ax, record.schedule)
+            if k:
+                ax.plot(grid, _recurrence_cdf(rec + t_end, grid), color=RAMP(1.0), lw=1.2)
+            else:
+                ax.text(0.5, 0.5, "", transform=ax.transAxes,
+                        ha="center", va="center", color=MUTED, fontsize=8)
+            ax.set_title(f"{len(s.posterior.problem.t)} readings (month {s.t_now:.1f})",
+                         loc="left", fontsize=8.5)
+            ax.set_xlim(0, grid[-1])
+            ax.set_ylim(0, 1.02)
+        for ax in axes.flat[n:]:
+            ax.axis("off")
+        for ax in axes[:, 0]:
+            ax.set_ylabel("P(recurred)")
+        for ax in axes[-1]:
+            ax.set_xlabel("months since diagnosis")
+        fig.suptitle(f"{record.patient_id}: P(recurred by t) after every refit",
+                     fontsize=10, x=0.01, ha="left")
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
+        return _save(fig, path, dpi=130)
+
+
+def recurrence_densities(hist, path=None, until=None, levels=REC_LEVELS, xmax=None, log_x=False):
+    """Recurrence-time density after every refit, stacked (ridgeline): earliest at the top, in
+    months since diagnosis (t = 0); the grey line is the end of ACT.
+    Each curve is scaled to its own peak, so the shapes compare, not the heights.
+    The time axis runs until `until` of the draws have recurred in every refit (default 0.9 on a
+    linear axis: the long tails of early fits are cut at the right edge; 0.99 with log_x).
+    log_x=True shows early wide and late narrow forecasts equally well; the curves are then
+    densities of log time (density x t), which keeps the shaded areas right on that axis."""
+    until = (0.99 if log_x else 0.9) if until is None else until
+    rec_all = [s.recurrence_times() for s in hist.snapshots]
+    known = [not np.isnan(r).all() for r in rec_all]
+    record = hist.record
+    t_end = record.schedule.t_end
+    if xmax is None:
+        xmax = max([t_end + _recurrence_xmax(r, until) for r, k in zip(rec_all, known) if k]
+                   + [t_end + 1.0])
+    if log_x:
+        starts = [t_end + np.quantile(r, 0.01, method="inverted_cdf")
+                  for r, k in zip(rec_all, known) if k]
+        xmin = max(0.1, 0.7 * min(starts + [t_end, xmax]))
+        grid = np.geomspace(xmin, xmax, 1500)
+    else:
+        xmin, grid = 0.0, np.linspace(0, xmax, 1500)
+    n = len(hist.snapshots)
+    with plt.rc_context(STYLE):
+        fig, ax = plt.subplots(figsize=(10, 1.2 + 0.55 * n))
+        ax.set_axisbelow(True)                       # grid behind the shading
+        ax.axvline(t_end, color=MUTED, lw=1.4, zorder=0)    # end of ACT
+        for i, (s, rec, k) in enumerate(zip(hist.snapshots, rec_all, known)):
+            base = n - 1 - i
+            if not k:                                # no post-surgery reading yet: empty row
+                continue
+            density = np.where(grid >= t_end, _recurrence_density(rec, grid - t_end), 0.0)
+            density = density * (grid if log_x else 1.0)
+            density = 0.9 * density / density.max() if density.max() > 0 else density
+            _fill_intervals(ax, grid, density, rec + t_end, levels, base=base, label=i == n - 1)
+            ax.plot(grid, base + density, color=RAMP(1.0), lw=1)
+            median = t_end + np.quantile(rec, 0.5, method="inverted_cdf")
+            if np.isfinite(median) and median <= xmax:
+                ax.plot([median, median], [base, base + 0.9], color="white", lw=1.2)
+        ax.set_yticks(np.arange(n)[::-1] + 0.3)
+        ax.set_yticklabels([f"{len(s.posterior.problem.t)} readings (month {s.t_now:.1f})"
+                            for s in hist.snapshots], fontsize=8)
+        ax.grid(axis="y", visible=False)
+        if log_x:
+            ax.set_xscale("log")
+            _clean_log(ax, "x")
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(-0.1, n)
+        ax.set_xlabel("Probability of recurrence at months since diagnosis" + (" (log scale)" if log_x else ""))
+        ax.legend(fontsize=8, frameon=False, loc="upper right", ncol=4)
+        fig.tight_layout()
         return _save(fig, path)

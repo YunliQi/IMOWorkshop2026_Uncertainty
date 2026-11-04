@@ -107,6 +107,9 @@ hist = fc.replay(rec)    # refit after every visit (~0.1 s per fit)
 hist.table(); hist.parameter_table()
 hist.plot_tube("tube.png"); hist.plot_panels("panels.png")
 hist.plot_parameters("params.png"); hist.plot_parameter_space("space.png")
+snap.recurrence_times()  # each draw's recurrence time with no horizon (months after ACT)
+snap.plot_recurrence("rec.png"); hist.plot_recurrence("rec_history.png")   # recurrence-time densities
+snap.plot_recurrence_cdf("cdf.png"); hist.plot_recurrence_cdf("cdf_history.png")   # P(recurred by t)
 ```
 
 **Model** (`ovca/problem.py`), shared by every backend:
