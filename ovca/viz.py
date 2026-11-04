@@ -585,8 +585,7 @@ def recurrence_cdfs(hist, path=None, until=0.9, xmax=None, facet=True, ncol=4):
     facet=True (default): one panel per refit, labelled by the number of readings and the month.
     facet=False: every refit on
     one axis, light (early) to dark (late); steeper curves = a sharper forecast. The axis runs
-    until `until` of the draws have recurred in every refit. Refits before the first
-    post-surgery reading have no curve."""
+    until `until` of the draws have recurred in every refit."""
     rec_all = [s.recurrence_times() for s in hist.snapshots]
     known = [not np.isnan(r).all() for r in rec_all]
     record = hist.record
