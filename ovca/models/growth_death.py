@@ -19,6 +19,7 @@ class GrowthDeath(BaseModel):
     param_names = ("gamma", "delta")
     bounds = {"gamma": (1e-3, 10.0), "delta": (1e-3, 10.0)}   # per month, as in the poster code
     starts = ((0.1, 0.5), (0.5, 0.5), (0.3, 2.0), (1.0, 3.0), (0.05, 1.0))
+    scale_invariant = True
 
     def rhs(self, t, x, theta, drug):
         return (theta["gamma"] - theta["delta"] * drug) * x
@@ -28,6 +29,12 @@ class GrowthDeath(BaseModel):
         log_x0 = np.log(max(float(np.asarray(x0).ravel()[0]), 1e-300))
         log_x = log_x0 + theta["gamma"] * (t - t0) - theta["delta"] * time_on(t, t0, intervals)
         return np.exp(np.minimum(log_x, LOG_CAP))[:, None]
+
+    def log_growth_batch(self, t, t0, theta, intervals):
+        t = np.atleast_1d(np.asarray(t, dtype=float))
+        g = np.asarray(theta["gamma"], dtype=float)[:, None]
+        d = np.asarray(theta["delta"], dtype=float)[:, None]
+        return g * (t - t0)[None, :] - d * time_on(t, t0, intervals)[None, :]
 
     # ---- vectorised versions of the base-class batch methods (exact solution) ----------
     def _log_t_surgery(self, s, th_pre, ca125_0):

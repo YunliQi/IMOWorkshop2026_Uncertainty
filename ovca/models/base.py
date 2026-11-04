@@ -27,6 +27,11 @@ class BaseModel(ABC):
     bounds: dict = {}                # name -> (low, high), used by calibration
     starts: tuple = ()               # starting guesses for calibration, in param_names order
     state_names: tuple = ("T",)
+    # True if CA-125 scales with its start value (doubling T0 doubles the whole curve). Then a
+    # segment's level can be set at any time (forecast tool: at the first reading).
+    scale_invariant = False
+    # True if the model provides log_tumour_symbolic (needed by the MCMC backend).
+    symbolic = False
 
     # ---- model definition --------------------------------------------------------------
     @abstractmethod
@@ -116,6 +121,26 @@ class BaseModel(ABC):
                                             q) >= cutoff
         idx = np.argmax(above, axis=1)
         return np.where(above.any(axis=1), grid[idx], np.inf)
+
+    def log_growth_batch(self, t, t0, theta, intervals):
+        """log CA-125(t) - log CA-125(t0) within one segment, for N parameter sets (theta maps
+        names to arrays of N). Returns (N, len(t)). Only meaningful if scale_invariant.
+        Default: a loop over simulate_segment starting from 1."""
+        t = np.atleast_1d(np.asarray(t, dtype=float))
+        n = len(np.atleast_1d(next(iter(theta.values()))))
+        out = np.empty((n, t.size))
+        for i in range(n):
+            th = {k: float(np.atleast_1d(v)[i]) for k, v in theta.items()}
+            fwd = t >= t0
+            out[i, fwd] = np.log(self.simulate_segment(t[fwd], t0, 1.0, th, intervals))
+            if (~fwd).any():
+                raise ValueError("log_growth_batch: t must be >= t0")
+        return out
+
+    def log_tumour_symbolic(self, t, schedule, theta_pre, theta_post, log_ca125_0, log_q):
+        """For the MCMC backend: log CA-125 at times t as a PyTensor expression of the
+        parameters (see docs/BACKEND_GUIDE.md). Not implemented by default."""
+        raise NotImplementedError(f"{self.name} has no symbolic solution")
 
     # ---- helpers -----------------------------------------------------------------------
     def theta(self, vector):
