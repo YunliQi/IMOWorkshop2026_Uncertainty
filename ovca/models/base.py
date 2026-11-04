@@ -32,6 +32,12 @@ class BaseModel(ABC):
     scale_invariant = False
     # True if the model provides log_tumour_symbolic (needed by the MCMC backend).
     symbolic = False
+    # Parameters surgery may change by default in the forecasting tool (None: the project
+    # default, gamma and delta where they exist, otherwise every parameter).
+    default_shift_params = None
+    # True if CA-125 = tumour part + a background b0 (a per-patient parameter the tool samples);
+    # the model then returns only the tumour part.
+    background = False
 
     # ---- model definition --------------------------------------------------------------
     @abstractmethod
@@ -136,6 +142,12 @@ class BaseModel(ABC):
             if (~fwd).any():
                 raise ValueError("log_growth_batch: t must be >= t0")
         return out
+
+    def segment_log_growth(self, t, t0, theta, schedule, phase):
+        """log CA-125(t) - log CA-125(t0) within the 'pre' or 'post' segment, for N parameter
+        sets. Used by the forecasting tool. Default: log_growth_batch with that segment's
+        treatment intervals; override when the segment depends on earlier treatment."""
+        return self.log_growth_batch(t, t0, theta, schedule.intervals(phase))
 
     def log_tumour_symbolic(self, t, schedule, theta_pre, theta_post, log_ca125_0, log_q):
         """For the MCMC backend: log CA-125 at times t as a PyTensor expression of the

@@ -37,13 +37,30 @@ LABELS = {"gamma_pre": "γ before surgery (/mo)", "delta_pre": "δ before surger
           "shift_gamma": "surgery shift of log γ", "shift_delta": "surgery shift of log δ",
           "level_pre": "level at first pre-surgery reading", "sigma": "observation error σ",
           "level_post": "level at first post-surgery reading", "ca125_0": "CA-125 at t = 0",
-          "surgery_jump": "after / before surgery"}
-LINEAR = {"shift_gamma", "shift_delta"}
+          "surgery_jump": "after / before surgery",
+          # poptk
+          "growth_pre": "growth rate (/mo)", "growth_post": "growth after surgery (/mo)",
+          "kill_pre": "log10 kill per dose (median cell)",
+          "kill_post": "log10 kill per dose after surgery",
+          "het_pre": "within-tumour sd of log10 sensitivity",
+          "het_post": "sensitivity sd after surgery",
+          "shift_growth": "surgery shift of log growth", "shift_kill": "surgery shift of log kill",
+          "shift_het": "surgery shift of log het",
+          "g_pre": "growth g (/mo)", "g_post": "growth g after surgery (/mo)",
+          "k_pre": "chemo kill k on S (/mo, during a pulse)",
+          "k_post": "chemo kill k after surgery (/mo)",
+          "rho_pre": "R0 / S0 at the first reading", "rho_post": "R0 / S0 (after surgery)",
+          "shift_g": "surgery shift of log g", "shift_k": "surgery shift of log k",
+          "shift_rho": "surgery shift of log rho", "b0": "background CA-125 b0 (U/mL)"}
+LINEAR = {"shift_gamma", "shift_delta", "shift_growth", "shift_kill", "shift_het",
+          "shift_g", "shift_k", "shift_rho"}
 
 
 def _clean_log(ax, which="both"):
     for a in {"x": [ax.xaxis], "y": [ax.yaxis], "both": [ax.xaxis, ax.yaxis]}[which]:
-        a.set_major_locator(LogLocator(subs=(1, 2, 5)))
+        lo, hi = (ax.get_xlim() if a is ax.xaxis else ax.get_ylim())
+        narrow = lo > 0 and hi / lo < 6          # fewer than two 1-2-5 ticks: use 1..9
+        a.set_major_locator(LogLocator(subs=np.arange(1, 10) if narrow else (1, 2, 5)))
         a.set_major_formatter(FormatStrFormatter("%g"))
         a.set_minor_formatter(NullFormatter())
 
@@ -288,6 +305,23 @@ BAND_PARAMS = ("gamma_pre", "delta_pre", "shift_gamma", "shift_delta",
                "gamma_post", "delta_post", "level_post", "sigma")
 
 
+def _prior_quantiles(snap, n=20000, seed=0):
+    """Prior 10% / 90% of each sampled parameter whose prior does not depend on the data
+    (levels are centred on the first reading, so they are left out); {_post} = {_pre} when
+    surgery does not change the parameter."""
+    pb = snap.posterior.problem
+    u = pb.prior.sample(np.random.default_rng(seed), n)
+    nat = pb.prior.natural(u)
+    out = {}
+    for name in pb.prior.names:
+        if name.startswith("level_") or name.startswith("shift_"):
+            continue
+        out[name] = tuple(np.quantile(nat[name], [0.1, 0.9]))
+        if name.endswith("_pre") and name[:-4] not in pb.sp:
+            out[name[:-4] + "_post"] = out[name]
+    return out
+
+
 def parameter_bands(hist, path=None, params=BAND_PARAMS):
     """Each parameter's posterior (median, 50%, 80%) after every refit; dashed = truth."""
     rec, snaps = hist.record, hist.snapshots
@@ -298,8 +332,12 @@ def parameter_bands(hist, path=None, params=BAND_PARAMS):
     with plt.rc_context(STYLE):
         fig, axes = plt.subplots(nrow, ncol, figsize=(17, 3.7 * nrow), sharex=True,
                                  squeeze=False)
+        prior = _prior_quantiles(snaps[-1])
         for ax, p in zip(axes.flat, params):
             d = S[S.parameter == p]
+            if p in prior:
+                for v, lab in zip(prior[p], ("prior 80% range", None)):
+                    ax.axhline(v, color=MUTED, ls="--", lw=1.0, label=lab, zorder=1)
             ax.fill_between(d.t_now, d.q10, d.q90, step="post", color=MODEL_C, alpha=0.18, lw=0,
                             label="80% interval")
             ax.fill_between(d.t_now, d.q25, d.q75, step="post", color=MODEL_C, alpha=0.35, lw=0,
@@ -315,6 +353,9 @@ def parameter_bands(hist, path=None, params=BAND_PARAMS):
                 ax.set_yscale("log")
                 _clean_log(ax, "y")
             ax.set_title(LABELS.get(p, p), loc="left", fontsize=10)
+        for i in range(len(params)):                 # last panel in its column: label x
+            if i + ncol >= len(params):
+                axes.flat[i].tick_params(labelbottom=True)
         for ax in axes.flat[len(params):]:
             ax.axis("off")
         for ax in axes[-1]:

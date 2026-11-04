@@ -184,6 +184,73 @@ posterior estimates can differ because of Monte Carlo error. Threshold-mode ABC 
 approximation with fixed observation noise, so it need not agree exactly with MCMC. The
 notebook's model 2 and hierarchical fitting are not supported by the MCMC backend.
 
+### PopTK model (`model="poptk"`)
+
+A port of the team's `popTK_ovarian.py`. The tumour grows exponentially between doses, and each
+dose kills instantly. Cells differ in drug sensitivity: their log10 sensitivity is normally
+distributed within the tumour, so each dose kills less than the one before. Surgery removes a
+fraction of the tumour and keeps the dose count, so ACT kill depends on the NACT doses before it.
+
+```python
+profile = default_profile("poptk")        # abc backend; MCMC supports only growth_death
+snap = Forecaster(profile).fit(rec)
+```
+
+| Parameter | Meaning | Default prior |
+|---|---|---|
+| `growth_pre` | growth rate per month (ln 2 / doubling time) | lognormal, median 0.15, sd_log 0.7 |
+| `kill_pre` | log10 kill per dose of the median cell (= 10^μ / ln 10 in the original) | lognormal, median 0.3, sd_log 0.7 |
+| `het_pre` | within-tumour sd of log10 sensitivity (the original `sd`) | lognormal, median 0.15, sd_log 0.8 |
+| `level_pre`, `level_post`, `sigma` | as for growth_death | same |
+
+Simplifications:
+- One combined chemotherapy dose is given at each cycle start (`nact_starts`, `act_starts`).
+  There is no VEGFi, so the original `correlation`, `interaction` and `dose` inputs drop out.
+- CA-125 is c × cells, and c and `initial_size` only enter as a product, the level parameter.
+  For the same reason the cure threshold (in cells) is not used.
+- Growth is exponential only (no Gompertz).
+- By default surgery changes no parameter (`surgery.shift_params = []`). Add, for example,
+  `"growth"` to `shift_params` to let surgery change it.
+- The surgery fraction is derived from the levels, as for growth_death.
+
+### Sensitive / resistant model (`model="resistance"`)
+
+The team's S/R model. Sensitive cells S and resistant cells R grow at g; S switches to R at a
+small rate m; each infusion (every NACT and ACT cycle start) gives a 3-day chemotherapy pulse
+that kills S at rate k and R at rate ε k; bevacizumab slows growth by d_bev while it is given.
+Surgery removes the same fraction of S and R, and CA-125 = a (S + R) + b0.
+
+```
+dS/dt = g (1 − D_S) S − m S − k c(t) S          D_S = min(d_bev u_bev(t), 1)
+dR/dt = g (1 − D_R) R + m S − ε k c(t) R        D_R = min(ε_bev d_bev u_bev(t), 1)
+```
+
+```python
+profile = default_profile("resistance")   # abc backend
+rec = PatientRecord(pid, t, y, Schedule(nact, t_surgery, act, bev_starts=bev))
+```
+
+| Parameter | Meaning | Default prior / value |
+|---|---|---|
+| `g_pre` | growth rate per month (table: 0.008 / day) | lognormal, median 0.24, sd_log 0.7 |
+| `k_pre` | chemotherapy kill on S per month while a pulse is on (table: 0.4 / day) | lognormal, median 12, sd_log 0.7 |
+| `rho_pre` | R0 / S0 at the first reading (table: 1%, range 0.1–17%) | lognormal, median 0.01, sd_log 1.5 |
+| `b0` | background CA-125 (U/mL) | lognormal, median 8, sd_log 0.6 |
+| `level_pre`, `level_post` | the tumour part a (S + R) at each segment's first reading | as for growth_death |
+| `sigma` | observation error | as for growth_death |
+| m, ε, d_bev, ε_bev, pulse | fixed: 6.7e-6 / day, 0.02, 0.25, 1.0, 3 days | `SensitiveResistant(m=..., ...)` |
+
+Notes:
+- b0 is estimated because a fixed 15 U/mL cannot fit nadirs below 15 (21% of our frontline
+  readings). The model returns the tumour part; the tool adds b0, and recurrence is the tumour
+  part reaching 35 − b0.
+- a, S0 and R0 only enter as a (S0 + R0), the level, and R0 / S0. β = 1 − q comes from the
+  post-surgery readings, as for the other models.
+- The fit window ends before maintenance, so PARP inhibitors (maintenance only) are left out.
+  `Schedule.bev_starts` lists the cycles given with bevacizumab; it is empty by default.
+- Within a stretch where the pulse and BEV are constant the system is linear and lower
+  triangular, so it is solved exactly.
+
 ## ABC-SMC forecasts, first version (`abc_smc.ipynb`)
 
 The first version, kept for reference: `ovca/abc_smc.py`, with a surgery fraction `q` and a
@@ -218,6 +285,8 @@ post = post.update(t_new, y_new)
 | `ovca/patient.py` | `Schedule` (NACT, surgery, ACT, D(t)) and `PatientParameters` (one patient's full parameter set) |
 | `ovca/models/base.py` | `BaseModel`: segment dynamics `dx/dt = rhs(t, x, θ, D(t))`, generic ODE solver, two-phase patient simulation with the surgery jump |
 | `ovca/models/growth_death.py` | the poster model `dT/dt = (γ − δ·D(t))·T`, with its exact solution |
+| `ovca/models/poptk.py` | PopTK: exponential growth, per-dose kill with heterogeneous sensitivity (Gauss–Hermite) |
+| `ovca/models/resistance.py` | sensitive / resistant cells, chemotherapy pulses, BEV brake, background CA-125 (exact solution) |
 | `ovca/models/__init__.py` | model registry (`get_model("growth_death")`) |
 | `ovca/generator.py` | parameter set → longitudinal CA-125 data (noise, surveillance, recurrence detection, true recurrence time) |
 | `ovca/calibration.py` | RMSE fit of a model to the data, each segment separately |
@@ -225,6 +294,7 @@ post = post.update(t_new, y_new)
 | `ovca/forecaster.py` | the tool: `Forecaster` (`fit`, `step`, `replay`), `Snapshot`, `History` |
 | `ovca/profile.py`, `ovca/priors.py` | profiles (`default_profile`, `check_profile`) and prior distributions |
 | `ovca/record.py`, `ovca/problem.py` | `PatientRecord` (input) and the shared probabilistic model |
+| `ovca/real_data.py` | reads the real-patient workbook (path given by you) into frontline `PatientRecord`s |
 | `ovca/backends/` | `abc_smc.py` (ABC-SMC), `mcmc.py` (PyMC NUTS) |
 | `ovca/forecast.py`, `ovca/viz.py` | forecasts (bands, recurrence, next visit, surprise) and figures |
 | `ovca/plots.py` | figures in `figures/` |
@@ -269,6 +339,26 @@ post = post.update(t_new, y_new)
 
 Other outputs: `results/calibration.csv`, `figures/0–2_*.png`.
 
+### Real patients (`ovca.real_data`)
+
+Reads the anonymised workbook (one sheet per patient). The workbook is never committed
+(`*.xlsx` is gitignored): keep a read-only local copy and pass its path.
+
+```python
+from ovca.real_data import patient_ids, read_patient, frontline_record
+path = "engineering/real_data/anonymized_data_protocol1_corrected_recurrenceday.xlsx"
+rec = frontline_record(read_patient(path, "OV3-1"))      # PatientRecord for Forecaster
+```
+
+- `read_patient` returns the raw days: readings, NACT / ACT / maintenance days, surgery,
+  recurrence status and day, and the cycle days given with bevacizumab.
+- `frontline` / `frontline_record` keep the frontline window: times in months from the first
+  reading, NACT before surgery, ACT up to the first gap of more than 90 days, and readings up
+  to the start of maintenance or second-line treatment (`t_stop`). Recurrence: "yes" gives the
+  clinical day, "no" gives `inf`, anything else `nan`.
+- Bevacizumab cycles come from the regimen text: a regimen naming BEV turns it on for its
+  block of cycles, "plus BEV" / "BEV added" turns it on, "BEV held" skips that cycle.
+
 ## Adding a model
 
 Create `ovca/models/<name>.py` with a `BaseModel` subclass that sets `name`, `param_names`,
@@ -276,4 +366,7 @@ Create `ovca/models/<name>.py` with a `BaseModel` subclass that sets `name`, `pa
 sensitive and resistant cells, Lotka–Volterra style), also override `initial_state`, `observe`
 and `surgery`. Register it in `ovca/models/__init__.py` and add its population to
 `config.POPULATION`. The generic solver integrates between treatment switches, so no exact
-solution is needed.
+solution is needed. A model whose segment depends on earlier treatment (like `poptk`, where
+ACT kill depends on the NACT doses) overrides `segment_log_growth(t, t0, theta, schedule, phase)`.
+A model with `background = True` returns only the tumour part; the tool then samples `b0` and
+adds it.
