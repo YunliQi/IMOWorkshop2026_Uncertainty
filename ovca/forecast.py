@@ -21,7 +21,7 @@ class Forecast:
 
     @property
     def post_known(self):
-        """False before the first post-surgery reading: nothing is forecast after surgery."""
+        """False if no recurrence time could be computed (every draw NaN)."""
         return not np.all(np.isnan(self.recurrence))
 
     def band(self, levels=(0.1, 0.5, 0.9), noisy=False):
@@ -61,8 +61,8 @@ class Forecast:
         """Suggested month of the next CA-125 visit after t_now.
         risk:  first time the chance of having crossed the cutoff since t_now reaches p;
         width: first time the 80% band of log CA-125 is wider than `width`.
-        Kept within [t_now + min_gap, t_now + max_gap]. NaN before the first post-surgery
-        reading (nothing is forecast after surgery yet)."""
+        Kept within [t_now + min_gap, t_now + max_gap]. NaN if nothing is forecast after
+        surgery."""
         if not self.post_known:
             return np.nan
         lo, hi = self.t_now + min_gap, self.t_now + max_gap

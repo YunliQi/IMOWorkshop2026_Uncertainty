@@ -114,9 +114,9 @@ snap.plot_recurrence_cdf("cdf.png"); hist.plot_recurrence_cdf("cdf_history.png")
 
 **Model** (`ovca/problem.py`), shared by every backend:
 - **Parameters:** the model's parameters before surgery (`gamma_pre`, `delta_pre`) and the surgery shifts `shift_gamma`, `shift_delta` (log post = log pre + shift).
-- **Levels:** `level_pre` and `level_post`, the tumour burden at each segment's first reading. There is no surgery fraction q: the post-surgery level is a free parameter.
+- **Levels:** `level_pre` and `level_post`, the tumour burden at each segment's first reading. Once there is a post-surgery reading, the post-surgery level is a free parameter and the surgery jump follows from it.
 - **Observation error:** `sigma`, estimated by default. Readings follow log y = log T(t) + σ·ε.
-- **Before the first post-surgery reading:** only the pre-surgery part is fitted. Nothing is forecast after surgery (bands, recurrence interval and next visit are empty) until that reading is in.
+- **Before the first post-surgery reading:** the readings inform only the pre-surgery part. The surgery shifts and `surgery_jump` (tumour burden just after surgery / just before; default lognormal, median 0.2, sd_log 0.6, the synthetic population's surgery fraction) come from their priors, so the curve after surgery and the recurrence time are still forecast. These forecasts are wide; how wide depends mostly on the shift priors.
 
 **Profile** (`ovca/profile.py`): one dict holds everything:
 - `backend`, `model`;
@@ -179,7 +179,8 @@ at each visit and can take substantially longer than a single fit.
 
 MCMC and likelihood-mode ABC use the same single-patient growth–death model and profile
 priors, including correlations, fixed parameters, observation noise, censoring, and time
-decay. Before the first post-surgery reading both fit only the pre-surgery segment. Their
+decay. Before the first post-surgery reading the shifts and `surgery_jump` come from their
+priors in both. Their
 posterior estimates can differ because of Monte Carlo error. Threshold-mode ABC is an
 approximation with fixed observation noise, so it need not agree exactly with MCMC. The
 notebook's model 2 and hierarchical fitting are not supported by the MCMC backend.

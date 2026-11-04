@@ -116,7 +116,7 @@ class Snapshot:
         closed-form recurrence time (growth_death: every draw recurs); otherwise searched up to
         10 x the horizon, inf = not by then. As in the forecast, if every reading after ACT is
         still below the cutoff, draws that would already have recurred are dropped.
-        All NaN before the first post-surgery reading."""
+        Before the first post-surgery reading, the part after surgery comes from the priors."""
         pb = self.posterior.problem
         exact = type(pb.model).recurrence_time_batch is not BaseModel.recurrence_time_batch
         tau = pb.recurrence(self.posterior.resample(n, np.random.default_rng(seed)),

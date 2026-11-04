@@ -27,6 +27,7 @@ PARAMETERS = {
     "shift_{p}": "surgery effect on {p}: log {p}_post = log {p}_pre + shift_{p}",
     "level_pre": "tumour burden at the first pre-surgery reading (U/mL)",
     "level_post": "tumour burden at the first post-surgery reading (U/mL)",
+    "surgery_jump": "burden just after / just before surgery (until a post-surgery reading)",
     "sigma": "observation error: sd of log CA-125 around the model (a number = fixed)",
 }
 
@@ -40,6 +41,8 @@ MODEL_PRIORS = {
 COMMON_PRIORS = {
     "level_pre": {"dist": "lognormal", "median": "first_reading", "sd_log": 1.0},
     "level_post": {"dist": "lognormal", "median": "first_reading", "sd_log": 1.0},
+    # the synthetic population's surgery fraction (before the generator's gates)
+    "surgery_jump": {"dist": "lognormal", "median": C.Q_MEDIAN, "sd_log": C.Q_SD_LOG},
     "sigma": {"dist": "lognormal", "median": 0.15, "sd_log": 0.5},
 }
 SHIFT_PRIOR = {"dist": "normal", "mean": 0.0, "sd": 0.6}
@@ -67,8 +70,9 @@ def default_profile(model="growth_death", backend="abc"):
         "correlations": {},              # {"gamma_pre:delta_pre": 0.3}, lognormal/normal only
         "surgery": {
             "shift_params": shift_params,            # which parameters surgery may change
-        },                                           # (no post-surgery forecast before the
-                                                     # first post-surgery reading)
+        },                                           # (before the first post-surgery reading
+                                                     # the shifts and surgery_jump come from
+                                                     # their priors)
         "initial_level": {
             "anchor": "first_reading",   # level parameters at each segment's first reading;
         },                               # "segment_start": at t = 0 and at surgery
@@ -138,7 +142,7 @@ def _same(a, b):
 
 def parameter_names(model, shift_params):
     return ([f"{p}_pre" for p in model.param_names] + [f"shift_{p}" for p in shift_params]
-            + ["level_pre", "level_post", "sigma"])
+            + ["level_pre", "level_post", "surgery_jump", "sigma"])
 
 
 def _num(x):
@@ -260,7 +264,8 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
 
     # priors
     dists = {}
-    positive = {f"{p}_pre" for p in model.param_names} | {"level_pre", "level_post", "sigma"}
+    positive = ({f"{p}_pre" for p in model.param_names}
+                | {"level_pre", "level_post", "surgery_jump", "sigma"})
     for name, spec in out["priors"].items():
         d = check_prior(name, spec, errors, name in positive, name.startswith("level_"))
         if d is not None:

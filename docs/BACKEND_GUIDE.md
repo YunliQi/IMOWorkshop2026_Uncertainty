@@ -35,9 +35,10 @@ InferenceProblem  ──►  YourBackend.fit(problem, settings, seed)  ──►
 | **out** | `Posterior.weights` | (N,) | `np.ones(4000)` |
 | **out** | `Posterior.diagnostics` | dict | `{"r_hat": {...}, "ess": {...}, "divergences": 0, "idata": idata}` |
 
-Before the first post-surgery reading (`problem.post_mode == "pre_only"`), `names` is only
-`['gamma_pre', 'delta_pre', 'level_pre', 'sigma']`. Return those; everything after surgery is
-left empty automatically.
+Before the first post-surgery reading (`problem.post_mode == "pre_only"`), `names` is
+`['gamma_pre', 'delta_pre', 'shift_gamma', 'shift_delta', 'level_pre', 'surgery_jump', 'sigma']`
+(no `level_post`). The likelihood does not depend on the shifts or `surgery_jump`, so their
+posterior is their prior; sample them anyway, they make the forecast after surgery.
 
 Quick look from Python:
 
@@ -84,7 +85,7 @@ Return `Posterior(problem, u, weights, backend="mcmc", diagnostics={...})`:
 | `cens`, `censor` | Boolean mask of censored readings and the censoring level (None = no censoring) |
 | `schedule` | `Schedule`: `nact_starts`, `t_surgery`, `act_starts`, `intervals("pre"/"post")` |
 | `a_pre`, `a_post` | Anchor times of the two level parameters (each segment's first reading) |
-| `post_mode` | `"level"` (there is a post-surgery reading) or `"pre_only"` (not yet: only the pre-surgery parameters, `level_pre` and `sigma` are sampled; everything after surgery is NaN) |
+| `post_mode` | `"level"` (there is a post-surgery reading) or `"pre_only"` (not yet: `surgery_jump` is sampled instead of `level_post`, and only the pre-surgery readings enter the likelihood) |
 | `sp` | Parameters that surgery shifts (`surgery.shift_params`) |
 | `loglik(u)` | Numpy reference log-likelihood, shape (N,): **your PyMC model must match it** (§5) |
 | `simulate(u, t)`, `natural(u)` | Numpy simulator and natural-unit parameters, for checks |
@@ -115,8 +116,8 @@ t <  t_surgery:  log T(t) = log level_pre  + g_pre  (t - a_pre)  - d_pre  on_pre
 t >= t_surgery:  log T(t) = log level_post + g_post (t - a_post) - d_post on_post(a_post, t)
 ```
 
-In `"pre_only"` mode there is no post-surgery part at all: fit the pre-surgery readings only.
-There is no surgery-fraction parameter in either mode. The time-on terms depend only on the
+In `"pre_only"` mode there are no post-surgery readings, so the likelihood has only the first
+line; the shifts and `surgery_jump` are sampled from their priors. The time-on terms depend only on the
 data, so compute them in numpy and pass them in as constants. Then the model is a few PyTensor lines, like `mcmc.ipynb`, and NUTS gets
 gradients for free.
 
@@ -195,7 +196,7 @@ are the column names the figures look for.
 1. **Columns of `u` in `problem.names` order, on the unconstrained scale** (§3). A column in the wrong order or on the natural scale gives wrong parameter panels and wrong bands, with no error.
 2. **Weights:** finite and ≥ 0. Equal weights (`np.ones(N)`) are the normal case for MCMC.
 3. **Enough draws:** a few hundred at least. Forecasts resample `profile["forecast"]["n_draws"]` draws and the violins resample 1500, so more draws than that only cost time.
-4. **Before the first post-surgery reading** (`post_mode == "pre_only"`), return only the 4 sampled columns. The post-surgery columns of `natural()` are then NaN, and the figures leave those panels and segments empty on their own.
+4. **Before the first post-surgery reading** (`post_mode == "pre_only"`), `problem.names` has `surgery_jump` instead of `level_post`. Return every column, including the shifts and `surgery_jump` that the readings don't inform: the forecast after surgery comes from them.
 5. **Diagnostics are not plotted.** Put `r_hat`, `ess` and divergences in `diagnostics`; they are kept on `snap.posterior.diagnostics` for your own checks.
 
 ### Options you can pass to the plotting methods

@@ -17,7 +17,7 @@ from scipy.stats import halfnorm, lognorm, norm, uniform
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ovca import Forecaster, History, PatientRecord, ProfileError, Snapshot
 from ovca import check_profile, default_profile
-from ovca.backends.base import Posterior
+from ovca.backends.base import Posterior, wquantile
 from ovca.priors import Dist, JointPrior
 from ovca.problem import InferenceProblem
 
@@ -187,9 +187,11 @@ def test_problem_anchors_and_levels(small_record, t_now, mode):
     assert pb.a_pre == 0.5
     assert pb.post_mode == mode
     assert pb.a_post == (4 if mode == "pre_only" else 4.5)
-    assert "jump" not in pb.names                     # no surgery-fraction parameter at all
+    assert "jump" not in pb.names
     assert ("level_post" in pb.names) == (mode == "level")
-    assert any(n.startswith("shift_") for n in pb.names) == (mode == "level")
+    # before the first post-surgery reading the jump has a prior; after it, it is derived
+    assert ("surgery_jump" in pb.names) == (mode == "pre_only")
+    assert {"shift_gamma", "shift_delta"} <= set(pb.names)
     u = pb.prior.sample(np.random.default_rng(3), 7)
     nat = pb.natural(u)
     curve = pb.simulate(u, [pb.a_pre, pb.a_post_report])
@@ -198,21 +200,32 @@ def test_problem_anchors_and_levels(small_record, t_now, mode):
     if mode == "level":
         np.testing.assert_allclose(nat["level_post"], curve[:, 1])
         np.testing.assert_allclose(curve[:, 1], pb.prior.natural(u)["level_post"])
-    else:                                             # nothing forecast after surgery
-        assert np.isnan(curve[:, 1]).all() and np.isnan(nat["gamma_post"]).all()
-        assert np.isnan(pb.recurrence(u, 36)).all()
+    else:                                             # after surgery: forecast from the priors
+        prior = pb.prior.natural(u)
+        np.testing.assert_allclose(nat["surgery_jump"], prior["surgery_jump"])
+        np.testing.assert_allclose(nat["gamma_post"],
+                                   nat["gamma_pre"] * np.exp(prior["shift_gamma"]))
+        ts = small_record.schedule.t_surgery
+        jump = pb.simulate(u, [ts - 1e-9, ts])
+        np.testing.assert_allclose(jump[:, 1] / jump[:, 0], prior["surgery_jump"], rtol=1e-6)
+        assert np.isfinite(curve).all() and np.isfinite(pb.recurrence(u, np.inf)).all()
 
 
-def test_pre_only_snapshot_has_no_post_forecast(small_record):
+def test_pre_only_snapshot_forecasts_from_priors(small_record):
     p = check_profile({"abc": {"n_particles": 300}}, verbose=False)
     snap = Forecaster(p).fit(small_record, 2)
     r = snap.report()
-    assert np.isnan(r["recurrence_median"]) and np.isnan(r["next_visit"])
-    b = snap.band()
-    assert b.loc[b.t >= small_record.schedule.t_surgery, "q50"].isna().all()
-    assert b.loc[b.t < small_record.schedule.t_surgery, "q50"].notna().all()
+    assert np.isfinite(r["recurrence_median"]) and np.isfinite(r["next_visit"])
+    assert snap.band().q50.notna().all()
+    # pre-surgery readings say nothing about the jump: its posterior is its prior
+    med = wquantile(snap.posterior.natural()["surgery_jump"], snap.posterior.weights, 0.5)
+    assert abs(np.log(med / 0.2)) < 0.2
     nxt = Forecaster(p).step(snap, 4.5, 20).shrinkage()
-    assert np.isnan(nxt["surprise"])                  # the old fit had no forecast there
+    assert np.isfinite(nxt["surprise"])               # the old fit forecast that reading
+    fixed = Forecaster(check_profile({"priors": {"surgery_jump": 0.1},
+                                      "abc": {"n_particles": 300}}, verbose=False))
+    nat = fixed.fit(small_record, 2).posterior.natural()
+    np.testing.assert_allclose(nat["surgery_jump"], 0.1)
     with pytest.raises(ProfileError, match="jump"):
         check_profile({"priors": {"jump": 0.2}}, verbose=False)
 
@@ -359,21 +372,17 @@ def test_plots_save(history, tmp_path, method):
 
 
 def test_recurrence_times(history, tmp_path):
-    """No-horizon recurrence times: exact and finite for growth_death, consistent with the
-    forecast inside its horizon, NaN (and an empty figure) before a post-surgery reading."""
+    """No-horizon recurrence times: exact and finite for growth_death (also before the first
+    post-surgery reading, from the priors), consistent with the forecast inside its horizon."""
     for snap in history.snapshots:
         rec = snap.recurrence_times(n=2000)
-        if not snap.forecast.post_known:
-            assert np.isnan(rec).all()
-            plt.close(snap.plot_recurrence(path=tmp_path / "empty.png"))
-            plt.close(snap.plot_recurrence_cdf(path=tmp_path / "empty_cdf.png"))
-            continue
         assert np.isfinite(rec).all() and (rec >= 0).all()
         end = snap.record.schedule.t_end
         horizon = max(snap.t_now, end) + snap.followup - end      # the forecast's window
         share_forecast = np.mean(np.isfinite(snap.forecast.recurrence))
         assert abs(np.mean(rec <= horizon) - share_forecast) < 0.1
-    assert any(not s.forecast.post_known for s in history.snapshots)   # both cases covered
+    modes = {s.posterior.problem.post_mode for s in history.snapshots}
+    assert modes == {"pre_only", "level"}                              # both cases covered
 
 
 @pytest.mark.skipif(__import__("importlib").util.find_spec("pymc") is None, reason="optional PyMC dependency")

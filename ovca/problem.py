@@ -5,11 +5,13 @@ Parameters (sampled on the unconstrained scale u, see priors.py):
     shift_{p}    surgery effect: log {p}_post = log {p}_pre + shift_{p}
     level_pre    tumour burden at the anchor of the pre-surgery segment (its first reading)
     level_post   tumour burden at the anchor of the post-surgery segment (its first reading)
+    surgery_jump tumour burden just after surgery / just before (only before the first
+                 post-surgery reading)
     sigma        observation error
-There is no surgery-fraction parameter: the post-surgery level comes from the post-surgery
-readings. Before the first post-surgery reading (post_mode "pre_only") only the pre-surgery
-segment is fitted; shifts and level_post are not sampled and every post-surgery quantity (curve
-after surgery, recurrence) is NaN.
+Once there is a post-surgery reading (post_mode "level"), the post-surgery level comes from the
+readings and the surgery jump is derived from it. Before that (post_mode "pre_only") the
+readings only inform the pre-surgery segment; the shifts and surgery_jump come from their
+priors, so the curve after surgery and the recurrence time are forecast from the priors.
 Observation model: log y_i = log T(t_i) + sigma * e_i, e_i ~ N(0, 1); readings below
 data.censor_below (if set) only say "below"; with data.decay_tau, reading i enters the
 log-likelihood with weight exp(-(t_now - t_i) / tau).
@@ -67,7 +69,8 @@ class InferenceProblem:
             use = ([f"{p}_pre" for p in self.model.param_names] + [f"shift_{p}" for p in sp]
                    + ["level_pre", "level_post", "sigma"])
         else:
-            use = [f"{p}_pre" for p in self.model.param_names] + ["level_pre", "sigma"]
+            use = ([f"{p}_pre" for p in self.model.param_names] + [f"shift_{p}" for p in sp]
+                   + ["level_pre", "surgery_jump", "sigma"])
         dists, fixed = {}, {}
         for n in use:
             spec = normalise(profile["priors"][n])
@@ -96,11 +99,11 @@ class InferenceProblem:
         th_pre = {p: nat[f"{p}_pre"] for p in m.param_names}
         g_pre = m.log_growth_batch([self.a_pre, s.t_surgery], 0.0, th_pre, s.intervals("pre"))
         log_c0 = np.log(nat["level_pre"]) - g_pre[:, 0]
-        if self.post_mode == "pre_only":          # nothing known after surgery yet
-            nan = np.full(len(log_c0), np.nan)
-            return th_pre, {p: nan for p in m.param_names}, np.exp(log_c0), nan, nat["sigma"]
         th_post = {p: th_pre[p] * np.exp(nat[f"shift_{p}"]) if p in self.sp else th_pre[p]
                    for p in m.param_names}
+        if self.post_mode == "pre_only":          # no post-surgery reading: jump from its prior
+            q = np.broadcast_to(np.asarray(nat["surgery_jump"], dtype=float), log_c0.shape)
+            return th_pre, th_post, np.exp(log_c0), q, nat["sigma"]
         log_ts_minus = log_c0 + g_pre[:, 1]
         g_post = m.log_growth_batch([self.a_post], s.t_surgery, th_post, s.intervals("post"))
         log_ts_plus = np.log(nat["level_post"]) - g_post[:, 0]
@@ -124,21 +127,11 @@ class InferenceProblem:
         """Noise-free tumour burden (N, len(t))."""
         th_pre, th_post, c0, q, _ = self.components(u)
         t = np.atleast_1d(np.asarray(t, dtype=float))
-        if self.post_mode == "pre_only":
-            s = self.schedule
-            out = np.full((len(c0), t.size), np.nan)
-            pre = t < s.t_surgery
-            if pre.any():
-                g = self.model.log_growth_batch(t[pre], 0.0, th_pre, s.intervals("pre"))
-                out[:, pre] = np.exp(np.log(c0)[:, None] + g)
-            return out
         return self.model.simulate_patient_batch(t, self.schedule, th_pre, th_post, c0, q)
 
     def recurrence(self, u, followup):
         """Absolute month when the model curve reaches the cutoff after ACT (inf = never)."""
         th_pre, th_post, c0, q, _ = self.components(u)
-        if self.post_mode == "pre_only":
-            return np.full(len(c0), np.nan)
         return self.model.recurrence_time_batch(self.schedule, th_pre, th_post, c0, q,
                                                 self.cutoff, followup)
 
