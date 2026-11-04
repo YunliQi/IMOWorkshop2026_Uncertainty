@@ -16,7 +16,7 @@ import pandas as pd
 from .backends import get_backend
 from .backends.base import Posterior
 from .forecast import Forecast, make_forecast
-from .models import get_model
+from .models import BaseModel, get_model
 from .problem import InferenceProblem
 from .profile import check_profile, describe
 from .record import PatientRecord
@@ -110,6 +110,25 @@ class Snapshot:
     def p_recur_within(self, months_after_end):
         return self.forecast.p_recur_within(months_after_end)
 
+    def recurrence_times(self, n=4000, seed=0):
+        """Recurrence time of each posterior draw, months after the end of ACT, with no horizon
+        (the forecast stops at profile["forecast"]["horizon"]). Exact for a model with a
+        closed-form recurrence time (growth_death: every draw recurs); otherwise searched up to
+        10 x the horizon, inf = not by then. As in the forecast, if every reading after ACT is
+        still below the cutoff, draws that would already have recurred are dropped.
+        All NaN before the first post-surgery reading."""
+        pb = self.posterior.problem
+        exact = type(pb.model).recurrence_time_batch is not BaseModel.recurrence_time_batch
+        tau = pb.recurrence(self.posterior.resample(n, np.random.default_rng(seed)),
+                            np.inf if exact else 10 * self.followup)
+        after_act = pb.t > pb.schedule.t_end + 1e-9
+        if (self.profile["forecast"]["condition_no_recurrence"] and after_act.any()
+                and not (pb.y[after_act] >= pb.cutoff).any()):
+            keep = tau > pb.t[after_act].max()
+            if keep.sum() >= 50:
+                tau = tau[keep]
+        return tau - pb.schedule.t_end
+
     def next_visit(self, **kw):
         return self.forecast.next_visit(**{**self.profile["next_visit"], **kw})
 
@@ -161,6 +180,14 @@ class Snapshot:
     def plot(self, ax=None, **kw):
         from . import viz
         return viz.snapshot(self, ax=ax, **kw)
+
+    def plot_recurrence(self, path=None, ax=None, **kw):
+        from . import viz
+        return viz.recurrence_density(self, ax=ax, path=path, **kw)
+
+    def plot_recurrence_cdf(self, path=None, ax=None, **kw):
+        from . import viz
+        return viz.recurrence_cdf(self, ax=ax, path=path, **kw)
 
 
 @dataclass
@@ -234,3 +261,11 @@ class History:
     def plot_parameter_distributions(self, path=None, **kw):
         from . import viz
         return viz.parameter_distributions(self, path, **kw)
+
+    def plot_recurrence(self, path=None, **kw):
+        from . import viz
+        return viz.recurrence_densities(self, path, **kw)
+
+    def plot_recurrence_cdf(self, path=None, **kw):
+        from . import viz
+        return viz.recurrence_cdfs(self, path, **kw)
