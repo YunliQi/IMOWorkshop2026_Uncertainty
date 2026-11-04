@@ -353,17 +353,7 @@ def test_plots_save(history, tmp_path, method):
         plt.close(fig)
 
 
-def test_mcmc_stub(record):
-    with pytest.warns(UserWarning, match="mcmc.*not implemented"):
-        p = check_profile({"backend": "mcmc"}, verbose=False)
-    assert p["backend"] == "mcmc"
-    with pytest.warns(UserWarning, match="mcmc.*not implemented"):
-        fc = Forecaster(p)
-    with pytest.raises(NotImplementedError, match=r"docs/BACKEND_GUIDE\.md"):
-        fc.fit(record.upto(record.schedule.t_end))
-
-
-@pytest.mark.skip(reason="MCMC backend not implemented")
+@pytest.mark.skipif(__import__("importlib").util.find_spec("pymc") is None, reason="optional PyMC dependency")
 def test_mcmc_contract(record):
     p = default_profile(backend="mcmc")
     p["mcmc"].update(draws=1000, tune=1000, chains=2, cores=1)
@@ -378,7 +368,7 @@ def test_mcmc_contract(record):
         np.testing.assert_allclose(nat[name], post.problem.prior.dists[name].to_natural(post.u[:, i]))
 
 
-@pytest.mark.skip(reason="MCMC backend not implemented")
+@pytest.mark.skipif(__import__("importlib").util.find_spec("pymc") is None, reason="optional PyMC dependency")
 def test_mcmc_matches_abc(record):
     p = default_profile()
     p["abc"].update(n_particles=3000, n_moves=20)
@@ -394,6 +384,37 @@ def test_mcmc_matches_abc(record):
     a, m = abc.recurrence_interval(), mcmc.recurrence_interval()
     assert np.isfinite([a[0], m[0]]).all()
     assert max(a[0], m[0]) <= min(a[2], m[2])
+
+
+@pytest.mark.skipif(__import__("importlib").util.find_spec("pymc") is None, reason="optional PyMC dependency")
+@pytest.mark.parametrize("pre_only,anchor", [(False, "first_reading"), (False, "segment_start"),
+                                            (True, "first_reading")])
+def test_mcmc_likelihood_matches_shared_problem(record, pre_only, anchor):
+    from ovca.backends.mcmc import _build_model
+
+    p = default_profile(backend="mcmc")
+    p["initial_level"]["anchor"] = anchor
+    p["data"].update(censor_below=35, decay_tau=12)
+    p["correlations"] = {"gamma_pre:delta_pre": 0.4}
+    p["priors"]["sigma"] = {"dist": "halfnormal", "sd": 0.3}
+    p["priors"]["level_pre"] = {"dist": "uniform", "low": 1, "high": 3000}
+    p["priors"]["shift_delta"] = 0.0
+    fc = Forecaster(p)
+    t_now = record.t[record.t < record.schedule.t_surgery][-1] if pre_only else record.t[-1]
+    problem = fc.problem(record, t_now=t_now)
+    model = _build_model(problem)
+    potential = model.replace_rvs_by_values([model["loglik"]])[0]
+    fn = model.compile_fn(potential)
+    rng = np.random.default_rng(831)
+    for u in problem.prior.sample(rng, 5):
+        point = model.initial_point()
+        gauss = u[problem.prior._gauss]
+        point["prior_z"] = np.linalg.solve(problem.prior._chol, gauss - problem.prior._mean)
+        for i in problem.prior._other:
+            name = problem.names[i]
+            suffix = "_log__" if problem.prior.dists[name].kind == "halfnormal" else "_interval__"
+            point[name + suffix] = u[i]
+        assert float(fn(point)) == pytest.approx(problem.loglik(u)[0], abs=1e-7)
 
 
 if __name__ == "__main__":

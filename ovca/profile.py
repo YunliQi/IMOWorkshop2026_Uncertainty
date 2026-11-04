@@ -342,22 +342,23 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
     if not (pert.get("scale") == "auto" or (_num(pert.get("scale")) and pert["scale"] > 0)):
         errors.append("abc.perturbation.scale: 'auto' or a number > 0 (multiplies the "
                       "particle covariance)")
-    if a["acceptance"] == "threshold" and "sigma" in dists and not dists["sigma"].fixed:
+    if backend == "abc" and a["acceptance"] == "threshold" and "sigma" in dists and not dists["sigma"].fixed:
         errors.append("priors.sigma: threshold acceptance cannot estimate sigma (a smaller "
                       "sigma always looks better); fix it with a number, e.g. 0.15, or use "
                       "abc.acceptance = 'likelihood'")
     mc = out["mcmc"]
     for k in ("draws", "tune", "chains"):
-        if not isinstance(mc[k], (int, np.integer)) or mc[k] < 1:
+        if not isinstance(mc[k], (int, np.integer)) or isinstance(mc[k], bool) or mc[k] < 1:
             errors.append(f"mcmc.{k}: must be an integer >= 1")
     if not _num(mc["target_accept"]) or not 0 < mc["target_accept"] < 1:
         errors.append("mcmc.target_accept: must be in (0, 1)")
-    if backend == "mcmc":
-        notes.append("backend 'mcmc' is not implemented yet: fitting will raise "
-                     "NotImplementedError (see docs/BACKEND_GUIDE.md)")
-        if not getattr(model, "symbolic", False):
-            notes.append(f"backend 'mcmc' needs a differentiable log T(t) for {mname} "
-                         f"(BaseModel.log_tumour_symbolic); see docs/BACKEND_GUIDE.md")
+    if mc["sampler"] != "nuts":
+        errors.append("mcmc.sampler: only 'nuts' is available")
+    if mc["cores"] is not None and (not isinstance(mc["cores"], (int, np.integer))
+                                     or isinstance(mc["cores"], bool) or mc["cores"] < 1):
+        errors.append("mcmc.cores: must be None or an integer >= 1")
+    if backend == "mcmc" and mname != "growth_death":
+        errors.append("backend 'mcmc' currently supports only growth_death")
     other = "mcmc" if backend == "abc" else "abc"
     if any(k.startswith(other + ".") for k in sources):
         msg = f"{other}: settings given but backend is {backend!r}; they are not used"

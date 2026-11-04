@@ -6,9 +6,11 @@ A backend turns that problem into a `Posterior`. Forecasts, the next-visit rule,
 `replay` and every figure read only the `Posterior`, so a new backend needs no changes anywhere
 else.
 
-`ovca/backends/mcmc.py` is the empty slot for the MCMC backend. Selecting
-`profile["backend"] = "mcmc"` passes `check_profile`, which prints a note. Calling
-`Forecaster(...).fit` then raises `NotImplementedError` until the backend exists.
+`ovca/backends/mcmc.py` implements single-patient PyMC NUTS for growth-death. Install
+the optional dependencies with `pip install -e ".[mcmc]"` and select
+`profile["backend"] = "mcmc"`. It targets the likelihood-mode ABC posterior.
+Sampler diagnostics and the ArviZ inference data are in `posterior.diagnostics`.
+The notebook’s second model and hierarchical fitting are not included.
 
 ## 0. Input and output at a glance
 
@@ -140,9 +142,9 @@ With weights that are not all 1, or with censoring, add the terms with
 the reference: for a handful of u vectors, your log-likelihood must equal `problem.loglik(u)`
 to about 1e-8.
 
-## 6. Done when
+## 6. Validation
 
-- Remove the `skip` marks of `test_mcmc_contract` and `test_mcmc_matches_abc` in `tests/test_tool.py`; both pass.
+- `test_mcmc_contract` and `test_mcmc_matches_abc` in `tests/test_tool.py` check the posterior contract and agreement with ABC when PyMC is installed.
 - `.venv/bin/python -m pytest tests -q` passes.
 - `Forecaster({"backend": "mcmc"}).replay(record)` gives the same figures as ABC, up to Monte Carlo noise. For the growth_death model the two must agree, because both target the same posterior.
 - Optional: install with `uv pip install -e ".[mcmc]"` (pymc, arviz).

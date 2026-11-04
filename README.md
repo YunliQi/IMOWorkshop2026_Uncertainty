@@ -130,11 +130,56 @@ hist.plot_parameters("params.png"); hist.plot_parameter_space("space.png")
 
 **Backends** (`ovca/backends/`):
 - **`abc`:** ABC-SMC. By default the acceptance kernel is the observation-error density (Wilkinson 2013), tempered from wide to exact, with Metropolis moves under a Gaussian perturbation kernel. This lets σ be estimated. `abc.acceptance = "threshold"` is classic distance < ε ABC-SMC: simulations include noise with a fixed σ. It gives slightly wider intervals and is about 15× slower.
-- **`mcmc`:** an empty slot for the team. Interface and checklist: [docs/BACKEND_GUIDE.md](docs/BACKEND_GUIDE.md).
+- **`mcmc`:** PyMC NUTS for the single-patient growth-death model, using the same priors and likelihood as likelihood-mode ABC. Install with `pip install -e ".[mcmc]"`, then select `backend="mcmc"`. Sampling diagnostics are available in `snap.posterior.diagnostics`. See [docs/BACKEND_GUIDE.md](docs/BACKEND_GUIDE.md).
 
 On the 30 test patients (SYN31–60), the 80% intervals contain the true value 70–93% of the
 time across parameters. The recurrence interval contains it 93% of the time at the end of ACT.
 The median σ estimate is 0.15 (true 0.15).
+
+### Using MCMC
+
+Install the optional PyMC and ArviZ dependencies in the environment running the tool:
+
+```bash
+pip install -e ".[mcmc]"
+```
+
+In `tool_demo.ipynb`, an optional installation cell appears near the start; uncomment and run
+it if needed, then restart the kernel. Section 7 fits the demo patient with MCMC, displays
+sampling diagnostics, and plots the ABC and MCMC forecasts side by side using `Snapshot.plot`.
+
+```python
+from ovca import Forecaster, default_profile
+
+profile = default_profile("growth_death", backend="mcmc")
+profile["mcmc"].update(draws=1000, tune=1000, chains=4, cores=1,
+                       target_accept=0.9)
+profile["seed"] = 2026
+fc = Forecaster(profile)
+snap = fc.fit(rec, t_now=rec.schedule.t_end)
+print(snap.summary())
+print(snap.recurrence_interval())
+snap.plot()
+
+diagnostics = snap.posterior.diagnostics
+print("divergences:", diagnostics["divergences"])
+print("R-hat:", diagnostics["r_hat"])
+print("bulk effective sample size:", diagnostics["ess"])
+# diagnostics["idata"] contains the ArviZ inference data.
+```
+
+`draws` and `tune` are per chain; `cores` controls parallel sampling and may be `None`.
+Only the `nuts` sampler is currently supported. Check divergences, R-hat, and effective
+sample sizes before interpreting a fit; more tuning or draws may be needed. The same `step`,
+`replay`, reports, and plotting methods work with MCMC, although replay runs a new sampler
+at each visit and can take substantially longer than a single fit.
+
+MCMC and likelihood-mode ABC use the same single-patient growth–death model and profile
+priors, including correlations, fixed parameters, observation noise, censoring, and time
+decay. Before the first post-surgery reading both fit only the pre-surgery segment. Their
+posterior estimates can differ because of Monte Carlo error. Threshold-mode ABC is an
+approximation with fixed observation noise, so it need not agree exactly with MCMC. The
+notebook's model 2 and hierarchical fitting are not supported by the MCMC backend.
 
 ## ABC-SMC forecasts, first version (`abc_smc.ipynb`)
 
@@ -177,7 +222,7 @@ post = post.update(t_new, y_new)
 | `ovca/forecaster.py` | the tool: `Forecaster` (`fit`, `step`, `replay`), `Snapshot`, `History` |
 | `ovca/profile.py`, `ovca/priors.py` | profiles (`default_profile`, `check_profile`) and prior distributions |
 | `ovca/record.py`, `ovca/problem.py` | `PatientRecord` (input) and the shared probabilistic model |
-| `ovca/backends/` | `abc_smc.py` (ABC-SMC), `mcmc.py` (to be written, see `docs/BACKEND_GUIDE.md`) |
+| `ovca/backends/` | `abc_smc.py` (ABC-SMC), `mcmc.py` (PyMC NUTS) |
 | `ovca/forecast.py`, `ovca/viz.py` | forecasts (bands, recurrence, next visit, surprise) and figures |
 | `ovca/plots.py` | figures in `figures/` |
 | `run_pipeline.py` | runs everything; `--gen-model` and `--fit-model` can differ |
