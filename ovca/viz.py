@@ -336,8 +336,8 @@ SAMPLED = {"gamma_pre", "delta_pre", "level_pre", "sigma", "shift_gamma", "shift
 
 def parameter_distributions(hist, path=None, params=ALL_PARAMS, n=1500, seed=0):
     """Full posterior of every parameter after each refit, one violin per visit (x = visit,
-    labelled with its month). Parameters not estimable yet (post-surgery ones before the first
-    post-surgery reading) are left empty; dashed = truth (synthetic data)."""
+    labelled with its month). Before the first post-surgery reading the post-surgery parameters
+    come from their priors; dashed = truth (synthetic data)."""
     rec, snaps = hist.record, hist.snapshots
     rng = np.random.default_rng(seed)
     draws = []
@@ -528,7 +528,7 @@ def recurrence_density(snap, ax=None, path=None, until=0.999, levels=REC_LEVELS)
         ax.axvline(t_end, color=MUTED, lw=1.4, zorder=0)    # end of ACT
         ax.set_xlabel("months since diagnosis")
         ax.set_ylabel("density")
-        if np.isnan(rec).all():                      # no post-surgery reading yet: nothing to show
+        if np.isnan(rec).all():                      # no relapse forecast: nothing to show
             ax.set_xlim(0, max(t_end, snap.t_now) + 12)
             return _save(fig, path)
         xmax = t_end + _recurrence_xmax(rec, until)
@@ -569,7 +569,7 @@ def recurrence_cdf(snap, ax=None, path=None, until=0.999):
         ax.set_xlabel("months since diagnosis")
         ax.set_ylabel("P(recurred by then)")
         if np.isnan(rec).all():
-            ax.text(0.5, 0.5, "no post-surgery reading yet: nothing is forecast after surgery",
+            ax.text(0.5, 0.5, "no relapse forecast",
                     transform=ax.transAxes, ha="center", va="center", color=MUTED)
             ax.set_xlim(0, max(s.t_end, snap.t_now) + 12)
             return _save(fig, path)
@@ -678,7 +678,7 @@ def recurrence_densities(hist, path=None, until=None, levels=REC_LEVELS, xmax=No
         ax.axvline(t_end, color=MUTED, lw=1.4, zorder=0)    # end of ACT
         for i, (s, rec, k) in enumerate(zip(hist.snapshots, rec_all, known)):
             base = n - 1 - i
-            if not k:                                # no post-surgery reading yet: empty row
+            if not k:                                # no relapse forecast: empty row
                 continue
             density = np.where(grid >= t_end, _recurrence_density(rec, grid - t_end), 0.0)
             density = density * (grid if log_x else 1.0)
