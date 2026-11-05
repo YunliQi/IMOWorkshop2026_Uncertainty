@@ -96,7 +96,7 @@ def test_profile_defaults_and_mcmc_refused():
         warnings.simplefilter("ignore")
         p = check_profile({"model": "poptk"}, verbose=False)
     assert p["surgery"]["shift_params"] == []
-    assert {"growth_pre", "kill_pre", "het_pre", "level_pre", "level_post", "sigma"} == set(
+    assert {"growth_pre", "kill_pre", "het_pre", "level_pre", "level_post", "sigma", "q_surgery"} == set(
         p["priors"])
     with pytest.raises(ProfileError, match="growth_death"):
         check_profile({"model": "poptk", "backend": "mcmc"}, verbose=False)

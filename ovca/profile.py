@@ -29,6 +29,7 @@ PARAMETERS = {
     "level_post": "tumour burden at the first post-surgery reading (U/mL)",
     "sigma": "observation error: sd of log CA-125 around the model (a number = fixed)",
     "b0": "background CA-125 not made by the tumour (U/mL; models with background only)",
+    "q_surgery": "fraction of the tumour left by surgery, 1 - beta (surgery.mode continuous)",
 }
 
 # Settings (other than priors) that differ by model; anything not named takes the default.
@@ -66,6 +67,9 @@ COMMON_PRIORS = {
     "sigma": {"dist": "lognormal", "median": 0.15, "sd_log": 0.5},
 }
 SHIFT_PRIOR = {"dist": "normal", "mean": 0.0, "sd": 0.6}
+# surgery.mode "continuous": fraction left by surgery (beta ~ 0.99, team table)
+Q_SURGERY_PRIOR = {"dist": "truncated_lognormal", "median": 0.01, "sd_log": 1.5,
+                   "low": 1e-6, "high": 1.0}
 
 
 def _model_priors(model):
@@ -87,6 +91,7 @@ def default_profile(model="growth_death", backend="abc"):
     priors = _model_priors(m)
     priors.update({f"shift_{p}": dict(SHIFT_PRIOR) for p in shift_params})
     priors.update(copy.deepcopy(COMMON_PRIORS))
+    priors["q_surgery"] = dict(Q_SURGERY_PRIOR)
     if getattr(m, "background", False):
         priors.setdefault("b0", dict(B0_PRIOR))
     out = {
@@ -97,7 +102,8 @@ def default_profile(model="growth_death", backend="abc"):
         "correlations": {},              # {"gamma_pre:delta_pre": 0.3}, lognormal/normal only
         "surgery": {
             "shift_params": shift_params,            # which parameters surgery may change
-        },                                           # (no post-surgery forecast before the
+            "mode": "level",             # "level": post-surgery level from its readings;
+        },                               # "continuous": one curve, surgery leaves q_surgery                                           # (no post-surgery forecast before the
                                                      # first post-surgery reading)
         "initial_level": {
             "anchor": "first_reading",   # level parameters at each segment's first reading;
@@ -305,7 +311,7 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
     # priors
     dists = {}
     positive = ({f"{p}_pre" for p in model.param_names}
-                | {"level_pre", "level_post", "sigma", "b0"})
+                | {"level_pre", "level_post", "sigma", "b0", "q_surgery"})
     for name, spec in out["priors"].items():
         d = check_prior(name, spec, errors, name in positive, name.startswith("level_"))
         if d is not None:
@@ -410,6 +416,11 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
         errors.append("mcmc.cores: must be None or an integer >= 1")
     if backend == "mcmc" and mname != "growth_death":
         errors.append("backend 'mcmc' currently supports only growth_death")
+    if out["surgery"].get("mode") not in ("level", "continuous"):
+        errors.append(f"surgery.mode: {out['surgery'].get('mode')!r}; use 'level' or "
+                      f"'continuous'")
+    elif backend == "mcmc" and out["surgery"]["mode"] == "continuous":
+        errors.append("surgery.mode 'continuous' is not available with backend 'mcmc' yet")
     other = "mcmc" if backend == "abc" else "abc"
     if any(k.startswith(other + ".") for k in sources):
         msg = f"{other}: settings given but backend is {backend!r}; they are not used"
