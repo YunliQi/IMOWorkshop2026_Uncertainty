@@ -1,9 +1,11 @@
-"""Sensitive and resistant cells with chemotherapy pulses (Team Purple's S/R model).
+"""Sensitive and resistant cells with chemotherapy pulses, bevacizumab and PARP inhibitors
+(Team Purple's S/R model).
 
-    dS/dt = g (1 - D_S(t)) S - m S - k c(t) S
-    dR/dt = g (1 - D_R(t)) R + m S - eps k c(t) R
-    D_S = min(d_bev u_bev(t), 1),   D_R = min(eps_bev d_bev u_bev(t), 1)
+    dS/dt = g S - m S - k c(t) S - k_bev b(t) S - k_parp p(t) S
+    dR/dt = g R + m S - eps k c(t) R - eps_bev k_bev b(t) R - eps_parp k_parp p(t) R
     c(t) = 1 for `pulse` after each infusion (every NACT and ACT cycle start), else 0
+    b(t) = 1 while on bevacizumab (frontline cycles given with BEV, and BEV maintenance)
+    p(t) = 1 while on PARP maintenance; k_parp = k_parp_hrd if HRD else k_parp_hrp
     surgery: S, R -> q S, q R;      CA-125 = a (S + R) + b0
 
 Estimated per patient (per month): g growth, k chemotherapy kill on S while a pulse is on,
@@ -12,14 +14,19 @@ levels: a, S0 and R0 only enter through a (S0 + R0), which is the level paramete
 ratio rho; the surgery fraction (beta = 1 - q) comes from the post-surgery readings.
 
 Fixed (team table, converted to months with 30 days per month):
-    m       S -> R switching    6.7e-6 per day  (Kozlowska: 1e-5 per division x 0.667 / day)
-    eps     kill on R / kill on S   0.02        (Kozlowska alpha1)
-    d_bev   bevacizumab growth brake 0.25       (1 - HR, GOG-218 / ICON7)
-    eps_bev BEV effect on R / on S   1.0
-    pulse   3 days per infusion
-PARP inhibitors are maintenance only, after the frontline window the tool fits, so they are
-left out. Within a stretch where c and u_bev are constant the system is linear and lower
-triangular, so it is solved exactly (no ODE solver).
+    m           S -> R switching          6.7e-6 per day  (Kozlowska: 1e-5 / division x 0.667)
+    eps         kill on R / kill on S     0.02            (Kozlowska alpha1)
+    k_bev       BEV kill                  0.00235 per day (GOG-0218)
+    eps_bev     BEV on R / on S           1.0
+    k_parp_hrd  PARP kill, HRD            0.03081 per day (PAOLA-1 HRD+)
+    k_parp_hrp  PARP kill, HRP            0.01236 per day (PRIMA HRp)
+    eps_parp    PARP on R / on S          0.2
+    pulse       3 days per infusion
+HRD status unknown: `hrd_unknown` = "hrp" (default), "hrd" or "mean" (average of the two rates).
+bev="brake" gives the earlier BEV form instead, a growth brake g (1 - d_bev b(t)) with
+d_bev = 0.25 (1 - HR, GOG-218 / ICON7), capped so BEV alone never shrinks the tumour.
+Within a stretch where c, b and p are constant the system is linear and lower triangular, so it
+is solved exactly (no ODE solver).
 """
 import numpy as np
 
@@ -48,10 +55,39 @@ class SensitiveResistant(BaseModel):
     default_shift_params = ()        # surgery removes cells but changes no parameter
     background = True                # CA-125 = a N + b0: the tool samples b0
 
-    def __init__(self, m=6.7e-6, eps=0.02, d_bev=0.25, eps_bev=1.0, pulse_days=3.0):
-        self.m = m * DPM                     # per month
-        self.eps, self.d_bev, self.eps_bev = eps, d_bev, eps_bev
+    def __init__(self, m=6.7e-6, eps=0.02, bev="kill", k_bev=0.00235, d_bev=0.25,
+                 eps_bev=1.0, k_parp_hrd=0.03081, k_parp_hrp=0.01236, eps_parp=0.2,
+                 hrd_unknown="hrp", pulse_days=3.0):
+        if bev not in ("kill", "brake"):
+            raise ValueError(f"bev must be 'kill' or 'brake', not {bev!r}")
+        if hrd_unknown not in ("hrp", "hrd", "mean"):
+            raise ValueError(f"hrd_unknown must be 'hrp', 'hrd' or 'mean', not {hrd_unknown!r}")
+        self.m = m * DPM                     # rates per month
+        self.eps, self.bev, self.d_bev, self.eps_bev = eps, bev, d_bev, eps_bev
+        self.k_bev = k_bev * DPM
+        self.k_parp_hrd, self.k_parp_hrp = k_parp_hrd * DPM, k_parp_hrp * DPM
+        self.eps_parp, self.hrd_unknown = eps_parp, hrd_unknown
         self.pulse = pulse_days / DPM        # months
+
+    def k_parp(self, schedule):
+        """PARP kill rate (per month) for this patient's HR status."""
+        hrd = getattr(schedule, "hrd", None)
+        if hrd is None:
+            return {"hrp": self.k_parp_hrp, "hrd": self.k_parp_hrd,
+                    "mean": 0.5 * (self.k_parp_hrd + self.k_parp_hrp)}[self.hrd_unknown]
+        return self.k_parp_hrd if hrd else self.k_parp_hrp
+
+    def rates(self, g, k, c, u, p, schedule):
+        """Net growth rates (a_S, a_R) per month with chemo c, BEV u and PARP p (0 or 1)."""
+        kp = self.k_parp(schedule) * p
+        if self.bev == "kill":
+            a1 = g - self.m - k * c - self.k_bev * u - kp
+            a2 = g - self.eps * k * c - self.eps_bev * self.k_bev * u - self.eps_parp * kp
+        else:
+            ds, dr = min(self.d_bev * u, 1.0), min(self.eps_bev * self.d_bev * u, 1.0)
+            a1 = g * (1 - ds) - self.m - k * c - kp
+            a2 = g * (1 - dr) - self.eps * k * c - self.eps_parp * kp
+        return a1, a2
 
     # ---- treatment inputs --------------------------------------------------------------
     def infusions(self, schedule):
@@ -63,9 +99,10 @@ class SensitiveResistant(BaseModel):
         return np.column_stack([d, d + self.pulse]) if d.size else np.zeros((0, 2))
 
     def drug_free_from(self, schedule):
-        """After this time no pulse and no BEV is on."""
+        """After this time no pulse, no BEV and no PARP is on (inf if a drug is ongoing)."""
         ends = [schedule.t_end]
-        for iv in (self.pulse_intervals(schedule), schedule.bev_intervals()):
+        for iv in (self.pulse_intervals(schedule), schedule.bev_intervals(),
+                   schedule.parp_intervals()):
             if iv.size:
                 ends.append(float(iv[:, 1].max()))
         return max(ends)
@@ -79,10 +116,9 @@ class SensitiveResistant(BaseModel):
         S, R = x
         c = drug_on([t], self.pulse_intervals(schedule))[0]
         u = drug_on([t], schedule.bev_intervals())[0]
-        ds, dr = min(self.d_bev * u, 1.0), min(self.eps_bev * self.d_bev * u, 1.0)
-        g, k = theta["g"], theta["k"]
-        return [g * (1 - ds) * S - self.m * S - k * c * S,
-                g * (1 - dr) * R + self.m * S - self.eps * k * c * R]
+        p = drug_on([t], schedule.parp_intervals())[0]
+        a1, a2 = self.rates(theta["g"], theta["k"], c, u, p, schedule)
+        return [a1 * S, a2 * R + self.m * S]
 
     def rhs(self, t, x, theta, drug):
         raise NotImplementedError("the S/R model needs the schedule; use simulate_patient")
@@ -105,8 +141,9 @@ class SensitiveResistant(BaseModel):
         n = max(len(g), len(k), len(rho))
         g, k, rho = (np.broadcast_to(v, (n,)) for v in (g, k, rho))
         pulses, bev = self.pulse_intervals(schedule), schedule.bev_intervals()
+        parp = schedule.parp_intervals()
         tq = np.unique(t)
-        edges = np.concatenate([pulses.ravel(), bev.ravel()])
+        edges = np.concatenate([pulses.ravel(), bev.ravel(), parp.ravel()])
         edges = edges[(edges > 0) & (edges < tq[-1])] if tq.size else edges[:0]
         pts = np.unique(np.concatenate([[0.0], edges, tq]))
         out = np.empty((n, pts.size))
@@ -118,9 +155,8 @@ class SensitiveResistant(BaseModel):
             h, mid = b - a, 0.5 * (a + b)
             c = drug_on([mid], pulses)[0]
             u = drug_on([mid], bev)[0]
-            ds, dr = min(self.d_bev * u, 1.0), min(self.eps_bev * self.d_bev * u, 1.0)
-            a1 = g * (1 - ds) - self.m - k * c
-            a2 = g * (1 - dr) - self.eps * k * c
+            p = drug_on([mid], parp)[0]
+            a1, a2 = self.rates(g, k, c, u, p, schedule)
             e2 = np.exp(a2 * h)
             s_new = s * np.exp(a1 * h)
             r_new = r * e2 + self.m * s * h * e2 * _phi((a1 - a2) * h)
@@ -164,16 +200,48 @@ class SensitiveResistant(BaseModel):
                                   "simulate_patient / simulate_patient_batch")
 
     def recurrence_time_batch(self, schedule, theta_pre, theta_post, ca125_0, q, cutoff,
-                              followup, step=None):
-        """Exact. cutoff is the tumour part a N to reach (array of N when b0 varies). Once no
-        drug is on, S and R both grow at g (switching keeps S + R), so log N is linear."""
+                              followup, step=0.02):
+        """First time >= end of ACT at which the tumour part a N reaches cutoff (an array of N
+        when b0 varies), inf if not within followup months. While a drug is still on after ACT
+        (BEV, PARP) the curve can fall and rise, so that stretch is searched on a grid of
+        `step` months and the crossing refined in between; once no drug is on, S and R both
+        grow at g (switching keeps S + R), so log N is linear and the crossing is exact."""
         s = schedule
+        t_end, t_stop = s.t_end, s.t_end + followup
+        n = len(np.atleast_1d(ca125_0))
+        cut = np.broadcast_to(np.asarray(cutoff, float), (n,))
+        log_cut = np.log(np.where(cut > 0, cut, 1.0))
+        out = np.full(n, np.inf)
+        out[cut <= 0] = t_end
         t0 = self.drug_free_from(s)
-        log_t0 = np.log(self.simulate_patient_batch([t0], s, theta_pre, theta_post,
+        todo = cut > 0
+        if t0 > t_end + 1e-12:                   # drugs on after ACT: grid search
+            hi = min(t0, t_stop)
+            grid = np.unique(np.append(np.arange(t_end, hi, step), hi))
+            sub = lambda d: {k: np.asarray(v)[todo] for k, v in d.items()}   # noqa: E731
+            ln = np.log(np.maximum(self.simulate_patient_batch(
+                grid, s, sub(theta_pre), sub(theta_post), np.asarray(ca125_0)[todo],
+                np.asarray(q)[todo]), 1e-300)) - log_cut[todo][:, None]
+            above = ln >= 0
+            hit = above.any(1)
+            j = np.argmax(above, 1)
+            jj = np.maximum(j - 1, 0)
+            r = np.arange(len(j))
+            a, b = ln[r, jj], ln[r, j]
+            frac = np.where((j > 0) & (b > a), -a / np.where(b > a, b - a, 1.0), 0.0)
+            tc = grid[jj] + frac * (grid[j] - grid[jj])
+            idx = np.flatnonzero(todo)
+            out[idx[hit]] = tc[hit]
+            todo = todo.copy()
+            todo[idx[hit]] = False
+        if t0 >= t_stop or not todo.any():
+            return np.where(out <= t_stop, out, np.inf)
+        start = max(t0, t_end)
+        log_t0 = np.log(self.simulate_patient_batch([start], s, theta_pre, theta_post,
                                                     ca125_0, q)[:, 0])
-        cut = np.broadcast_to(np.asarray(cutoff, float), log_t0.shape)
         g = np.broadcast_to(np.asarray(theta_post["g"], float), log_t0.shape)
         with np.errstate(divide="ignore", invalid="ignore"):
-            gap = np.where(cut > 0, np.log(np.where(cut > 0, cut, 1.0)) - log_t0, -np.inf)
+            gap = log_cut - log_t0
             dt = np.where(gap <= 0, 0.0, np.where(g > 0, gap / g, np.inf))
-        return np.where(t0 + dt <= s.t_end + followup, t0 + dt, np.inf)
+        out = np.where(todo, start + dt, out)
+        return np.where(out <= t_stop, out, np.inf)

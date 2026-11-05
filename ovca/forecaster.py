@@ -25,7 +25,7 @@ from .record import PatientRecord
 class Forecaster:
     def __init__(self, profile=None, verbose=False):
         self.profile = check_profile(profile, verbose=verbose)
-        self.model = get_model(self.profile["model"])
+        self.model = get_model(self.profile["model"], **self.profile["model_options"])
         self.backend = get_backend(self.profile["backend"])
 
     def __repr__(self):

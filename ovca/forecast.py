@@ -109,7 +109,7 @@ def make_forecast(post: Posterior, horizon, step, n_draws, condition_no_recurren
     tau = pb.recurrence(u, t_stop - s.t_end)
     if condition_no_recurrence:
         surv = pb.t > s.t_end + 1e-9
-        if surv.any() and not (pb.y[surv] >= pb.cutoff).any():
+        if surv.any() and not pb.observed_recurrence():
             keep = tau > pb.t[surv].max()
             if keep.sum() >= 50:
                 u, tumour, tau = u[keep], tumour[keep], tau[keep]
