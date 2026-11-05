@@ -7,8 +7,10 @@ from .resistance import SensitiveResistant
 MODELS = {m.name: m for m in (GrowthDeath, PopTK, SensitiveResistant)}
 
 
-def get_model(name) -> BaseModel:
+def get_model(name, **options) -> BaseModel:
+    """A model instance; options go to its constructor (e.g. bev="brake" for resistance)."""
     try:
-        return MODELS[name]()
+        cls = MODELS[name]
     except KeyError:
         raise ValueError(f"unknown model {name!r}; available: {sorted(MODELS)}") from None
+    return cls(**options)

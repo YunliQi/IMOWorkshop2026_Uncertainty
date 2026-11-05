@@ -26,6 +26,8 @@ def _build_model(problem):
             dist = prior.dists[name]
             if dist.kind == "halfnormal":
                 values[name] = pm.HalfNormal(name, sigma=dist.args["sd"])
+            elif dist.kind != "uniform":
+                raise ValueError(f"mcmc backend: {dist.kind} prior on {name} not supported")
             else:
                 values[name] = pm.Uniform(name, lower=dist.args["low"], upper=dist.args["high"])
         # Save natural values for extraction in the exact shared parameter order.

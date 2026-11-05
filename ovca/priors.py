@@ -9,6 +9,8 @@ Supported distributions (natural scale):
     {"dist": "normal", "mean": m, "sd": s}               real line; u = x
     {"dist": "halfnormal", "sd": s}                      positive;  u = log x
     {"dist": "uniform", "low": a, "high": b}             (a, b);    u = logit((x - a) / (b - a))
+    {"dist": "truncated_lognormal", "median": m, "sd_log": s, "low": a, "high": b}
+        lognormal(m, s) cut to (a, b), a > 0; u = logit((log x - log a) / (log b - log a))
     {"dist": "fixed", "value": v}  (or just the number v)
 `median` of a level prior may be the string "first_reading" (resolved per patient).
 """
@@ -23,8 +25,10 @@ DIST_ARGS = {
     "normal": ("mean", "sd"),
     "halfnormal": ("sd",),
     "uniform": ("low", "high"),
+    "truncated_lognormal": ("median", "sd_log", "low", "high"),
     "fixed": ("value",),
 }
+BOUNDED = {"uniform", "truncated_lognormal"}
 POSITIVE = {"lognormal", "halfnormal"}
 GAUSSIAN_U = {"lognormal", "normal"}      # u is exactly normal: can take correlations
 
@@ -50,7 +54,7 @@ class Dist:
     def support(self):
         if self.kind in POSITIVE:
             return 0.0, np.inf
-        if self.kind == "uniform":
+        if self.kind in BOUNDED:
             return self.args["low"], self.args["high"]
         if self.kind == "fixed":
             return self.args["value"], self.args["value"]
@@ -63,7 +67,21 @@ class Dist:
             return np.exp(u)
         if self.kind == "uniform":
             return a["low"] + (a["high"] - a["low"]) * expit(u)
+        if self.kind == "truncated_lognormal":
+            lo, w = self._log_box()
+            return np.exp(lo + w * expit(u))
         return u
+
+    def _log_box(self):
+        lo = np.log(self.args["low"])
+        return lo, np.log(self.args["high"]) - lo
+
+    def _trunc_z(self):
+        """Standardised log bounds and the normaliser of the truncated lognormal."""
+        a = self.args
+        m, s = np.log(a["median"]), a["sd_log"]
+        za, zb = (np.log(a["low"]) - m) / s, (np.log(a["high"]) - m) / s
+        return m, s, za, zb, norm.cdf(zb) - norm.cdf(za)
 
     def to_u(self, x):
         a = self.args
@@ -72,6 +90,9 @@ class Dist:
             return np.log(x)
         if self.kind == "uniform":
             return logit((x - a["low"]) / (a["high"] - a["low"]))
+        if self.kind == "truncated_lognormal":
+            lo, w = self._log_box()
+            return logit((np.log(x) - lo) / w)
         return x
 
     def u_mean_sd(self):
@@ -92,6 +113,12 @@ class Dist:
             return np.log(np.abs(rng.normal(0, a["sd"], n)) + 1e-300)
         if self.kind == "uniform":
             return logit(rng.uniform(1e-12, 1 - 1e-12, n))
+        if self.kind == "truncated_lognormal":     # inverse CDF of the truncated normal on log x
+            m, s, za, zb, _ = self._trunc_z()
+            v = rng.uniform(norm.cdf(za), norm.cdf(zb), n)
+            x = np.exp(m + s * norm.ppf(np.clip(v, 1e-300, 1 - 1e-16)))
+            x = np.clip(x, a["low"] * (1 + 1e-12), a["high"] * (1 - 1e-12))
+            return self.to_u(x)
         raise ValueError(self.kind)
 
     def logpdf_u(self, u):
@@ -104,6 +131,12 @@ class Dist:
             return np.log(2.0) + norm.logpdf(x, 0, a["sd"]) + u
         if self.kind == "uniform":          # p(u) = sigmoid(u)(1 - sigmoid(u))
             return -np.logaddexp(0, u) - np.logaddexp(0, -u)
+        if self.kind == "truncated_lognormal":   # z = log x = lo + w sigmoid(u)
+            m, s, _, _, Z = self._trunc_z()
+            lo, w = self._log_box()
+            z = lo + w * expit(u)
+            return (norm.logpdf(z, m, s) - np.log(Z) + np.log(w)
+                    - np.logaddexp(0, u) - np.logaddexp(0, -u))
         raise ValueError(self.kind)
 
     def describe(self):
@@ -118,6 +151,9 @@ class Dist:
                     f"{a['mean'] - 1.2816 * a['sd']:.3g} – {a['mean'] + 1.2816 * a['sd']:.3g}")
         if self.kind == "halfnormal":
             return f"halfnormal(sd {a['sd']:g}); 80% below {1.645 * a['sd']:.3g}"
+        if self.kind == "truncated_lognormal":
+            return (f"lognormal(median {a['median']:.3g}, sd_log {a['sd_log']:g}) cut to "
+                    f"[{a['low']:g}, {a['high']:g}]")
         return f"uniform({a['low']:g}, {a['high']:g})"
 
 

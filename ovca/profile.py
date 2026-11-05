@@ -31,6 +31,14 @@ PARAMETERS = {
     "b0": "background CA-125 not made by the tumour (U/mL; models with background only)",
 }
 
+# Settings (other than priors) that differ by model; anything not named takes the default.
+MODEL_SETTINGS = {
+    "resistance": {
+        "data": {"rule": "cutoff", "cutoff": 50.0},   # recurrence: model CA-125 reaches 50
+        "forecast": {"horizon": 4000.0 / C.DAYS_PER_MONTH},   # look-ahead 4000 days
+    },
+}
+
 # Default priors of the model parameters, per model (natural scale, before surgery).
 MODEL_PRIORS = {
     "growth_death": {
@@ -42,10 +50,12 @@ MODEL_PRIORS = {
         "kill_pre": {"dist": "lognormal", "median": 0.30, "sd_log": 0.7},
         "het_pre": {"dist": "lognormal", "median": 0.15, "sd_log": 0.8},
     },
-    "resistance": {   # per month: g growth (table 0.008/day), k kill on S during a pulse
-        "g_pre": {"dist": "lognormal", "median": 0.24, "sd_log": 0.7},    # (0.4/day), rho =
-        "k_pre": {"dist": "lognormal", "median": 12.0, "sd_log": 0.7},    # R0/S0 (1%, range
-        "rho_pre": {"dist": "lognormal", "median": 0.01, "sd_log": 1.5},  # 0.1-17%)
+    "resistance": {   # per month (team table): g growth 0.008/day (doubling 2.9 months),
+        "g_pre": {"dist": "lognormal", "median": 0.24, "sd_log": 0.7},    # k kill on S during a
+        "k_pre": {"dist": "lognormal", "median": 12.0, "sd_log": 0.7},    # pulse 0.4/day, rho =
+        "rho_pre": {"dist": "lognormal", "median": 0.0055, "sd_log": 1.5},  # R0/S0 (R0 share
+        "b0": {"dist": "truncated_lognormal", "median": 12.0, "sd_log": 0.6,  # e^-5.211); b0
+               "low": 2.0, "high": 35.0},                                 # median 12 in 2-35
     },
 }
 # background CA-125 (normal range 10-35; many nadirs in our data are below 15)
@@ -78,10 +88,11 @@ def default_profile(model="growth_death", backend="abc"):
     priors.update({f"shift_{p}": dict(SHIFT_PRIOR) for p in shift_params})
     priors.update(copy.deepcopy(COMMON_PRIORS))
     if getattr(m, "background", False):
-        priors["b0"] = dict(B0_PRIOR)
-    return {
+        priors.setdefault("b0", dict(B0_PRIOR))
+    out = {
         "backend": backend,
         "model": m.name,
+        "model_options": {},             # passed to the model, e.g. {"bev": "brake"}
         "priors": priors,
         "correlations": {},              # {"gamma_pre:delta_pre": 0.3}, lognormal/normal only
         "surgery": {
@@ -94,7 +105,11 @@ def default_profile(model="growth_death", backend="abc"):
         "data": {
             "censor_below": C.ABC_CENSOR_BELOW,      # None: readings used as they are
             "decay_tau": None,                       # months; weight exp(-(t_now - t_i)/tau)
-            "cutoff": C.CA125_CUTOFF,                # recurrence = model CA-125 reaches this
+            "rule": "cutoff",            # recurrence: "cutoff" = model CA-125 reaches cutoff;
+                                         # "rise" = reaches rise_factor x its nadir since surgery
+            "cutoff": C.CA125_CUTOFF,
+            "rise_factor": 2.0,
+            "rule_step": 0.05,           # months; grid for the "rise" rule
         },
         "abc": {
             "acceptance": "likelihood",  # kernel = observation-error density (sigma estimable);
@@ -121,6 +136,9 @@ def default_profile(model="growth_death", backend="abc"):
         "next_visit": {"rule": "risk", "p": 0.10, "width": 1.0, "min_gap": 1.0, "max_gap": 6.0},
         "seed": 0,
     }
+    for sec, vals in MODEL_SETTINGS.get(m.name, {}).items():
+        out[sec].update(copy.deepcopy(vals))
+    return out
 
 
 class ProfileError(ValueError):
@@ -202,13 +220,16 @@ def check_prior(name, spec, errors, positive, allow_first_reading):
     if bad:
         return None
     a = spec
-    if kind in ("lognormal",) and a["median"] != "first_reading" and a["median"] <= 0:
+    if kind in ("lognormal", "truncated_lognormal") and a["median"] != "first_reading" \
+            and a["median"] <= 0:
         errors.append(f"priors.{name}.median: must be > 0")
     for k in ("sd_log", "sd"):
         if k in a and a[k] <= 0:
             errors.append(f"priors.{name}.{k}: must be > 0")
-    if kind == "uniform" and not a["low"] < a["high"]:
-        errors.append(f"priors.{name}: uniform needs low < high")
+    if kind in ("uniform", "truncated_lognormal") and not a["low"] < a["high"]:
+        errors.append(f"priors.{name}: {kind} needs low < high")
+    if kind == "truncated_lognormal" and a["low"] <= 0:
+        errors.append(f"priors.{name}.low: must be > 0")
     if positive:
         lo = {"uniform": a.get("low"), "fixed": a.get("value"), "normal": -np.inf}.get(kind, 0.0)
         if kind == "normal" or (lo is not None and lo < 0) or (kind == "fixed" and a["value"] <= 0):
@@ -236,7 +257,11 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
     if mname not in MODELS:
         raise ProfileError(f"model: unknown model {mname!r}{_suggest(mname, MODELS)}; "
                            f"registered: {sorted(MODELS)}")
-    model = get_model(mname)
+    opts = profile.get("model_options") or {}
+    try:
+        model = get_model(mname, **opts)
+    except (TypeError, ValueError) as e:
+        raise ProfileError(f"model_options: {e}") from None
     base = default_profile(model, backend)
 
     # shift_params first: they decide which shift priors exist
@@ -343,6 +368,12 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
             errors.append(f"data.{k}: must be None or a number > 0")
     if not _num(d["cutoff"]) or d["cutoff"] <= 0:
         errors.append("data.cutoff: must be a number > 0")
+    if d["rule"] not in ("cutoff", "rise"):
+        errors.append(f"data.rule: {d['rule']!r}; use 'cutoff' or 'rise'")
+    if not _num(d["rise_factor"]) or d["rise_factor"] <= 1:
+        errors.append("data.rise_factor: must be a number > 1")
+    if not _num(d["rule_step"]) or d["rule_step"] <= 0:
+        errors.append("data.rule_step: must be a number > 0 (months)")
 
     # backend settings
     a = out["abc"]
@@ -423,7 +454,7 @@ def check_profile(profile=None, verbose=True, strict_unused=False):
 
 
 def prior_table(profile):
-    model = get_model(profile["model"])
+    model = get_model(profile["model"], **(profile.get("model_options") or {}))
     src = profile.get("_sources", {})
     rows = []
     for name, spec in profile["priors"].items():

@@ -33,7 +33,7 @@ LOG_2PI = np.log(2 * np.pi)
 class InferenceProblem:
     def __init__(self, record: PatientRecord, t_now, profile, model: BaseModel = None):
         self.profile = profile
-        self.model = model or get_model(profile["model"])
+        self.model = model or get_model(profile["model"], **(profile.get("model_options") or {}))
         self.record = record
         self.schedule = s = record.schedule
         t_now = float(record.t.max() if t_now is None else t_now)
@@ -43,6 +43,9 @@ class InferenceProblem:
         self.t_now, self.t, self.y = t_now, rec.t, rec.y
         d = profile["data"]
         self.cutoff = d["cutoff"]
+        self.rule = d.get("rule", "cutoff")
+        self.rise_factor = d.get("rise_factor", 2.0)
+        self.rule_step = d.get("rule_step", 0.05)
         self.censor = d["censor_below"]
         tau = d["decay_tau"]
         self.w = np.ones_like(self.t) if not tau else np.exp(-(t_now - self.t) / tau)
@@ -150,15 +153,52 @@ class InferenceProblem:
         return out
 
     def recurrence(self, u, followup):
-        """Absolute month when the model curve reaches the cutoff after ACT (inf = never)."""
+        """Absolute month of recurrence by the model curve after ACT (inf = not within
+        followup months). Rule "cutoff": the curve (with b0) reaches data.cutoff. Rule "rise":
+        the curve reaches rise_factor x its lowest value since surgery (on a grid of
+        data.rule_step months, refined linearly)."""
         th_pre, th_post, c0, q, _ = self.components(u)
         if self.post_mode == "pre_only":
             return np.full(len(c0), np.nan)
+        if self.rule == "rise":
+            return self._rise_recurrence(u, followup)
         cutoff = self.cutoff
         if "b0" in self.prior.names + list(self.prior.fixed):   # tumour part to reach
             cutoff = self.cutoff - self.background(u)
         return self.model.recurrence_time_batch(self.schedule, th_pre, th_post, c0, q,
                                                 cutoff, followup)
+
+    def _rise_recurrence(self, u, followup):
+        s, step = self.schedule, self.rule_step
+        t_end, t_stop = s.t_end, s.t_end + followup
+        grid = np.unique(np.concatenate([np.arange(s.t_surgery, t_stop, step), [t_end, t_stop]]))
+        y = np.log(np.maximum(self.simulate(u, grid), 1e-300))
+        nadir = np.minimum.accumulate(y, axis=1)
+        d = y - (nadir + np.log(self.rise_factor))      # >= 0: risen rise_factor x the nadir
+        ok = grid[None, :] >= t_end - 1e-12
+        above = (d >= 0) & ok
+        hit = above.any(1)
+        j = np.argmax(above, 1)
+        r = np.arange(len(j))
+        jj = np.maximum(j - 1, 0)
+        a, b = d[r, jj], d[r, j]
+        refine = (j > 0) & ok[0, jj] & (b > a) & (a < 0)
+        frac = np.where(refine, -a / np.where(b > a, b - a, 1.0), 0.0)
+        tc = np.where(refine, grid[jj] + frac * (grid[j] - grid[jj]), grid[j])
+        return np.where(hit, tc, np.inf)
+
+    def observed_recurrence(self):
+        """Whether the readings after ACT (up to t_now) already meet the rule."""
+        s = self.schedule
+        after = self.t > s.t_end + 1e-9
+        if not after.any():
+            return False
+        if self.rule == "cutoff":
+            return bool((self.y[after] >= self.cutoff).any())
+        post = self.t >= s.t_surgery
+        yp, tp = self.y[post], self.t[post]
+        nadir = np.minimum.accumulate(yp)
+        return bool(((yp >= self.rise_factor * nadir) & (tp > s.t_end + 1e-9)).any())
 
     def loglik(self, u):
         """Weighted log-likelihood of the readings, (N,)."""
