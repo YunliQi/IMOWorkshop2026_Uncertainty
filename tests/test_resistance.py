@@ -187,8 +187,8 @@ def test_profile_has_background_and_others_do_not():
         warnings.simplefilter("ignore")
         p = check_profile({"model": "resistance"}, verbose=False)
     assert p["surgery"]["shift_params"] == []
-    assert {"g_pre", "k_pre", "rho_pre", "level_pre", "level_post", "sigma", "b0"} == set(
-        p["priors"])
+    assert {"g_pre", "k_pre", "rho_pre", "level_pre", "level_post", "sigma", "b0",
+            "q_surgery"} == set(p["priors"])
     for other in ("growth_death", "poptk"):
         assert "b0" not in default_profile(other)["priors"]
         assert default_profile(other)["data"]["rule"] == "cutoff"
@@ -277,3 +277,25 @@ def test_forecaster_recovers_patient():
                                        35.0 - 9.0, 36.0)[0] - rec.schedule.t_end
     lo, _, hi = snap.recurrence_interval(0.9)
     assert lo <= true_rec <= hi
+
+
+def test_continuous_surgery_recovers_q_and_forecasts_before_surgery():
+    truth = dict(g=0.2, k=12.0, rho=0.01)
+    rec, m, p = synthetic(truth)                  # surgery leaves q = 0.1
+    prof = default_profile("resistance")
+    prof["surgery"]["mode"] = "continuous"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fc = Forecaster(prof)
+        pb = fc.problem(rec)
+        assert "q_surgery" in pb.names and "level_post" not in pb.names
+        u = pb.prior.sample(np.random.default_rng(0), 4)
+        th_pre, th_post, c0, q, _ = pb.components(u)
+        ref = m.simulate_patient_batch(rec.t, rec.schedule, th_pre, th_post, c0, q)
+        assert np.allclose(pb.simulate(u, rec.t, background=False), ref)
+        snap = fc.fit(rec)
+        S = snap.summary((0.05, 0.5, 0.95)).set_index("parameter")
+        assert S.loc["surgery_jump", "q5"] <= 0.1 <= S.loc["surgery_jump", "q95"]
+        before = fc.fit(rec, t_now=rec.schedule.t_surgery - 1e-6)
+    assert before.posterior.problem.post_mode == "continuous"
+    assert np.isfinite(before.forecast.recurrence).mean() > 0.5

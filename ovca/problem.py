@@ -8,10 +8,14 @@ Parameters (sampled on the unconstrained scale u, see priors.py):
     sigma        observation error
     b0           background CA-125 (models with `background` only): CA-125 = tumour + b0,
                  and the levels above are the tumour part
-There is no surgery-fraction parameter: the post-surgery level comes from the post-surgery
-readings. Before the first post-surgery reading (post_mode "pre_only") only the pre-surgery
-segment is fitted; shifts and level_post are not sampled and every post-surgery quantity (curve
-after surgery, recurrence) is NaN.
+    q_surgery    fraction of the tumour left by surgery (= 1 - beta; surgery.mode "continuous")
+surgery.mode "level" (default): there is no surgery-fraction parameter, the post-surgery level
+comes from the post-surgery readings. Before the first post-surgery reading (post_mode
+"pre_only") only the pre-surgery segment is fitted; shifts and level_post are not sampled and
+every post-surgery quantity (curve after surgery, recurrence) is NaN.
+surgery.mode "continuous": one curve through surgery, which multiplies the tumour by
+q_surgery (a sampled parameter, no level_post). Post-surgery quantities exist at every t_now,
+so recurrence can be forecast before surgery (post_mode "continuous").
 Observation model: log y_i = log T(t_i) + sigma * e_i, e_i ~ N(0, 1); readings below
 data.censor_below (if set) only say "below"; with data.decay_tau, reading i enters the
 log-likelihood with weight exp(-(t_now - t_i) / tau).
@@ -56,7 +60,8 @@ class InferenceProblem:
         pre, post = self.t < s.t_surgery, self.t >= s.t_surgery
         first_reading = profile["initial_level"]["anchor"] == "first_reading"
         self.a_pre = float(self.t[pre][0]) if (first_reading and pre.any()) else 0.0
-        self.post_mode = "level" if post.any() else "pre_only"
+        continuous = profile["surgery"].get("mode", "level") == "continuous"
+        self.post_mode = "continuous" if continuous else "level" if post.any() else "pre_only"
         self.a_post = (float(self.t[post][0]) if (first_reading and post.any())
                        else s.t_surgery)
         # where level_post is reported (same time for every t_now, for trajectories)
@@ -71,6 +76,9 @@ class InferenceProblem:
         if self.post_mode == "level":
             use = ([f"{p}_pre" for p in self.model.param_names] + [f"shift_{p}" for p in sp]
                    + ["level_pre", "level_post", "sigma"])
+        elif self.post_mode == "continuous":
+            use = ([f"{p}_pre" for p in self.model.param_names] + [f"shift_{p}" for p in sp]
+                   + ["level_pre", "q_surgery", "sigma"])
         else:
             use = [f"{p}_pre" for p in self.model.param_names] + ["level_pre", "sigma"]
         if "b0" in profile["priors"]:
@@ -108,6 +116,8 @@ class InferenceProblem:
             return th_pre, {p: nan for p in m.param_names}, np.exp(log_c0), nan, nat["sigma"]
         th_post = {p: th_pre[p] * np.exp(nat[f"shift_{p}"]) if p in self.sp else th_pre[p]
                    for p in m.param_names}
+        if self.post_mode == "continuous":
+            return th_pre, th_post, np.exp(log_c0), nat["q_surgery"], nat["sigma"]
         log_ts_minus = log_c0 + g_pre[:, 1]
         g_post = m.segment_log_growth([self.a_post], s.t_surgery, th_post, s, "post")
         log_ts_plus = np.log(nat["level_post"]) - g_post[:, 0]
